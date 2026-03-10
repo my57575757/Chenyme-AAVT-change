@@ -22,24 +22,30 @@ if not open_protect:
     st.session_state.verify = True
 
 if "verify" in st.session_state:
-    pages = {
-        "Home": [
-            st.Page(page="page/project/home.py", title="主页", icon=":material/home:"),
-            st.Page("page/setting/set.py", title="设置", icon=":material/settings:")
-        ],
-        "Project": [
-            st.Page(page="page/project/audio.py", title="音频识别", icon=":material/graphic_eq:"),
-            st.Page(page="page/project/video.py", title="视频识别", icon=":material/subscriptions:"),
-            st.Page(page="page/project/translate.py", title="字幕翻译", icon=":material/subtitles:"),
-        ],
-        "Test": [
-            st.Page("page/tests/test.py", title="声音克隆", icon=":material/view_in_ar:"),
-            st.Page(page="page/tests/tools.py", title="辅助工具", icon=":material/construction:")
-        ],
+    # 使用传统导航方式（兼容 Streamlit 1.37.1）
+    page_names = ["主页", "设置", "音频识别", "视频识别", "字幕翻译", "声音克隆", "辅助工具"]
+    
+    if "current_page" not in st.session_state:
+        st.session_state.current_page = "主页"
+    
+    with st.sidebar:
+        st.title("导航")
+        selected = st.radio("选择页面", page_names, index=page_names.index(st.session_state.current_page))
+        st.session_state.current_page = selected
+    
+    # 执行选中的页面
+    page_files = {
+        "主页": "page/project/home.py",
+        "设置": "page/setting/set.py",
+        "音频识别": "page/project/audio.py",
+        "视频识别": "page/project/video.py",
+        "字幕翻译": "page/project/translate.py",
+        "声音克隆": "page/tests/test.py",
+        "辅助工具": "page/tests/tools.py",
     }
-
-    pg = st.navigation(pages, position="sidebar")
-    pg.run()
+    
+    import runpy
+    runpy.run_path(page_files[selected], run_name="__main__")
 else:
     st.write("# ")
     st.markdown("<h1 style='text-align: center;'>Chenyme-AAVT V0.9.0</h1>", unsafe_allow_html=True)

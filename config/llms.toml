@@ -14,9 +14,9 @@ url = ""
 model = ""
 
 [Global]
-key = ""
-url = ""
-all = false
+key = "sk-BffnTyBMPa9y4X3vl9UHOeoviZT1RDExiYSb1oap171OY0cc"
+url = "https://api.openai-proxy.org/v1"
+all = true
 
 [ChatGPT]
 key = ""

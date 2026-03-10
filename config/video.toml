@@ -5,7 +5,7 @@ faster_whisper_model_list = [ "tiny", "tiny.en", "base", "base.en", "small", "sm
 language_index = "自动识别"
 openai_whisper_model_index = "whisper-1"
 faster_whisper_model_index = "base"
-faster_whisper_model_local_index = "put models here（删除模型时请切换到该模型文件）"
+faster_whisper_model_local_index = "fast-whisper"
 
 [translate]
 translate_index = [ 2, 4,]
@@ -17,11 +17,11 @@ wait_time = 0.20000000000000004
 
 [subtitle]
 subtitle_model = "硬字幕"
-font = "System"
+font = "Arial"
 soft_font_size = 60
 hard_font_size = 18
 srt = "关闭"
 font_color = "#ffffff"
 
 [other]
-first = false
+first = true

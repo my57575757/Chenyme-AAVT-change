@@ -1,8 +1,12 @@
 import time
 import json
 import subprocess
+from typing import List
+
 import requests
 from pathlib import Path
+
+from moviepy.video.io.VideoFileClip import VideoFileClip
 from openai import OpenAI
 from openai import OpenAIError
 from concurrent.futures import ThreadPoolExecutor
@@ -17,6 +21,7 @@ import toml
 import torch
 import base64
 import streamlit as st
+from multiprocessing import Process, Manager
 
 
 def get_global_info():
@@ -40,7 +45,9 @@ def FileToMp3(log_level: str, input_dir: str, output_dir: str, output_name: str 
     if input_path.suffix.lower() == ".mp3":
         print("\033[1;34m🎧 文件已经是 MP3 格式，无需转换。\033[0m")
         return output_path
-
+    if os.path.exists(output_path):
+        print("\033[1;34m🎧 文件已存在，无需转换。\033[0m")
+        return output_path
     try:
         command = [
             "ffmpeg", "-loglevel", log_level, "-i", str(input_path),
@@ -102,9 +109,10 @@ def OpenaiWhisperResult(key: str, url: str, path: str, model: str, prompt: str, 
     return result
 
 
-def FasterWhisperResultDict(segments):
+def FasterWhisperResultDict(segments, info):
     segments = list(segments)
     return {
+        'lang': info.language,
         'text': ' '.join([segment.text for segment in segments]),
         'segments': [{
             'id': segment.id,
@@ -122,7 +130,7 @@ def FasterWhisperResultDict(segments):
     }
 
 
-def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: str, temp: float, vad: bool, lang: str, beam_size: int, min_vad: int):
+def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: str, temp: float, vad: bool, lang: str, beam_size: int, min_vad: int, returnList):
     valid_models = ['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v1', 'large-v2', 'large-v3', 'large', 'distil-small.en', 'distil-medium.en', 'distil-large-v2', 'distil-large-v3']
     if device:
         device = "cuda"
@@ -145,11 +153,12 @@ def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: st
         else:
             audio_file = (file_path / "output.mp3").open("rb")
     except FileNotFoundError as e:
+        returnList[0] = {"error": f"文件错误：{str(e)}"}
         return {"error": f"文件错误：{str(e)}"}
 
     try:
         with audio_file:
-            model = WhisperModel(model_name, device)
+            model = WhisperModel(model_name, device, compute_type="int8_float16")
             transcribe_args = {
                 "initial_prompt": prompt,
                 "beam_size": beam_size,
@@ -163,21 +172,31 @@ def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: st
             if lang != "自动识别":
                 transcribe_args["language"] = lang
 
-            segments, _ = model.transcribe(audio_file, **transcribe_args)
+            segments, info = model.transcribe(audio_file, **transcribe_args)
 
-        result = FasterWhisperResultDict(segments)
+        result = FasterWhisperResultDict(segments, info)
         print(f"\033[1;34m📝 Whisper识别结果:\033[0m\n{result['text']}")
+        returnList[0] = result
         return result
 
     except Exception as e:
+        print(f"转录过程发生错误：{str(e)}")
+        returnList[0] = {"error": f"转录过程发生错误：{str(e)}"}
         return {"error": f"转录过程发生错误：{str(e)}"}
 
 
 def runWhisperSeperateProc(*args):
     try:
-        with ThreadPoolExecutor() as executor:
-            future = executor.submit(FasterWhisperResult, *args)
-            return future.result()
+        # with ThreadPoolExecutor() as executor:
+        #     future = executor.submit(FasterWhisperResult, *args)
+        #     return future.result()
+        with Manager() as manager:
+            returnList = manager.list([None])
+            p = Process(target=FasterWhisperResult, args=args + (returnList,))
+            p.start()
+            p.join()
+            p.close()
+            return returnList[0]
 
     except Exception as e:
         st.error(f"An error occurred during transcription: {e}")
@@ -1229,3 +1248,21 @@ def write_llms(view, language, key, url, model, text, token, temp):
 def encode_image(path):
     with open(path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+
+
+def findVideos(directory: str) -> List:
+    videos = []
+    fileExt = ['m4a', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm', 'mkv', 'avi']
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.split('.')[-1] in fileExt:
+                videos.append(os.path.join(root, file))
+    print(f"找到{len(videos)}个视频文件")
+    return videos
+
+def get_file_size(file_path):
+    size = os.path.getsize(file_path)
+    return size
+def get_duration_from_moviepy(url):
+    clip = VideoFileClip(url)
+    return clip.duration
