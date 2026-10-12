@@ -118,6 +118,14 @@ qwen_max_new_tokens = whispers.get("Qwen3ASR", {}).get("max_new_tokens", 2048)
 qwen_line_max_chars = whispers.get("Qwen3ASR", {}).get("line_max_chars", 24)
 qwen_line_gap_seconds = whispers.get("Qwen3ASR", {}).get("line_gap_seconds", 1.0)
 qwen_line_max_seconds = whispers.get("Qwen3ASR", {}).get("line_max_seconds", 7.0)
+qwen_vad_enabled = whispers.get("Qwen3ASR", {}).get("vad_enabled", True)
+qwen_vad_threshold = whispers.get("Qwen3ASR", {}).get("vad_threshold", 0.5)
+qwen_vad_block_seconds = whispers.get("Qwen3ASR", {}).get("vad_block_seconds", 30)
+qwen_vad_min_speech_ratio = whispers.get("Qwen3ASR", {}).get("vad_min_speech_ratio", 0.02)
+qwen_sparse_item_max_seconds_per_char = whispers.get("Qwen3ASR", {}).get("sparse_item_max_seconds_per_char", 1.5)
+qwen_sparse_line_min_chars_per_second = whispers.get("Qwen3ASR", {}).get("sparse_line_min_chars_per_second", 0.5)
+qwen_sparse_item_min_seconds = whispers.get("Qwen3ASR", {}).get("sparse_item_min_seconds", 1.5)
+qwen_sparse_line_min_seconds = whispers.get("Qwen3ASR", {}).get("sparse_line_min_seconds", 3.0)
 video_local_path = whispers["Video_Local"]["path"]  # 视频路径
 
 log_setting = project["ffmpeg"]["log"]
@@ -477,6 +485,19 @@ with tab2:
                 qwen_line_gap_seconds = st.number_input("断句空隙 (s)", min_value=0.2, max_value=5.0, step=0.1, value=float(qwen_line_gap_seconds))
                 qwen_line_max_seconds = st.number_input("单行最大时长 (s)", min_value=2.0, max_value=20.0, step=0.5, value=float(qwen_line_max_seconds))
             qwen_context = st.text_area("上下文 / 热词（自然句，演员名、片名、系列设定写在末尾）", value=qwen_context)
+            with st.expander("幻觉抑制（VAD 预筛 + 稀疏过滤）", expanded=False):
+                st.caption("AV 素材喘息/BGM 占比高。VAD 先跳过纯非语音粗块再送识别（实测可跳过约 80% 时长）；稀疏过滤丢弃对齐器把幻觉字符摊到超长跨度的字幕。")
+                q1, q2 = st.columns(2)
+                with q1:
+                    qwen_vad_enabled = st.checkbox("启用 VAD 预筛", value=qwen_vad_enabled)
+                    qwen_vad_threshold = st.number_input("VAD 语音阈值（越高越严格）", min_value=0.1, max_value=0.9, step=0.05, value=float(qwen_vad_threshold))
+                    qwen_vad_block_seconds = st.number_input("VAD 粗块时长 (s)", min_value=10, max_value=300, step=10, value=int(qwen_vad_block_seconds))
+                    qwen_vad_min_speech_ratio = st.number_input("块内最低语音占比", min_value=0.005, max_value=0.2, step=0.005, format="%.3f", value=float(qwen_vad_min_speech_ratio))
+                with q2:
+                    qwen_sparse_item_min_seconds = st.number_input("稀疏字符判定最短时长 (s)", min_value=0.5, max_value=5.0, step=0.1, value=float(qwen_sparse_item_min_seconds))
+                    qwen_sparse_item_max_seconds_per_char = st.number_input("每字最大允许秒数（超过判幻觉）", min_value=0.5, max_value=5.0, step=0.1, value=float(qwen_sparse_item_max_seconds_per_char))
+                    qwen_sparse_line_min_seconds = st.number_input("稀疏行判定最短时长 (s)", min_value=1.0, max_value=10.0, step=0.5, value=float(qwen_sparse_line_min_seconds))
+                    qwen_sparse_line_min_chars_per_second = st.number_input("每行最低字/秒（低于丢弃）", min_value=0.2, max_value=2.0, step=0.1, value=float(qwen_sparse_line_min_chars_per_second))
             qwen_asr_path = st.text_input("ASR 模型路径", value=qwen_asr_path)
             qwen_aligner_path = st.text_input("强制对齐模型路径", value=qwen_aligner_path)
             st.write("")
@@ -498,6 +519,14 @@ with tab2:
                                 "line_max_chars": qwen_line_max_chars,
                                 "line_gap_seconds": qwen_line_gap_seconds,
                                 "line_max_seconds": qwen_line_max_seconds,
+                                "vad_enabled": qwen_vad_enabled,
+                                "vad_threshold": qwen_vad_threshold,
+                                "vad_block_seconds": qwen_vad_block_seconds,
+                                "vad_min_speech_ratio": qwen_vad_min_speech_ratio,
+                                "sparse_item_min_seconds": qwen_sparse_item_min_seconds,
+                                "sparse_item_max_seconds_per_char": qwen_sparse_item_max_seconds_per_char,
+                                "sparse_line_min_seconds": qwen_sparse_line_min_seconds,
+                                "sparse_line_min_chars_per_second": qwen_sparse_line_min_chars_per_second,
                             }
                             toml.dump(whispers, f)
                         st.session_state.save = True

@@ -54,6 +54,16 @@ max_new_tokens = 2048
 line_max_chars = 24
 line_gap_seconds = 1.0
 line_max_seconds = 7.0
+# VAD 预筛(复用 faster-whisper 自带 Silero):跳过纯非语音块,AV 素材可跳 80% 时长
+vad_enabled = true
+vad_threshold = 0.5
+vad_block_seconds = 30
+vad_min_speech_ratio = 0.02
+# 稀疏幻觉过滤:对齐器把幻觉字符摊到超长跨度上(实测正常 0.1~0.3s/字,幻觉 2~97s/字)
+sparse_item_min_seconds = 1.5
+sparse_item_max_seconds_per_char = 1.5
+sparse_line_min_seconds = 3.0
+sparse_line_min_chars_per_second = 0.5
 
 [Video_Local]
 path = "\\\\nas\\迅雷下载"

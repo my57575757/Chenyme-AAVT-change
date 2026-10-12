@@ -384,6 +384,16 @@ QWEN_SETTINGS_DEFAULTS = {
     "line_max_chars": 24,
     "line_gap_seconds": 1.0,
     "line_max_seconds": 7.0,
+    # VAD 预筛:跳过纯非语音粗块(AV 素材喘息/BGM 占比极高),只把含语音块送模型
+    "vad_enabled": True,
+    "vad_threshold": 0.5,
+    "vad_block_seconds": 30,
+    "vad_min_speech_ratio": 0.02,
+    # 稀疏幻觉过滤:强制日语时非语音段被编成文字,对齐器把字符摊到超长跨度上
+    "sparse_item_min_seconds": 1.5,
+    "sparse_item_max_seconds_per_char": 1.5,
+    "sparse_line_min_seconds": 3.0,
+    "sparse_line_min_chars_per_second": 0.5,
 }
 
 
@@ -458,6 +468,50 @@ def _qwen_items_to_segments(items: list, max_chars: int, gap_seconds: float, max
     return segments
 
 
+def _qwen_filter_sparse_items(items: list, min_seconds: float = 1.5, max_seconds_per_char: float = 1.5) -> list:
+    # 丢弃对齐器摊长的幻觉字符:时长超过门槛且每字占用超过 max_seconds_per_char。
+    # 真实密集台词约 0.1~0.3s/字,实测幻觉粒子被摊到 2~97s/字;短呻吟/附和(<min_seconds)无条件保留。
+    kept = []
+    for item in items:
+        duration = float(item.end_time) - float(item.start_time)
+        text_len = len(item.text.strip())
+        if duration > min_seconds and duration / max(text_len, 1) > max_seconds_per_char:
+            continue
+        kept.append(item)
+    return kept
+
+
+def _qwen_filter_sparse_segments(segments: list, min_seconds: float = 3.0,
+                                 min_chars_per_second: float = 0.5) -> list:
+    # 行级兜底:item 级漏网后,整行仍稀疏(长时长、极少字)则丢弃;短行不判罚。
+    return [
+        seg for seg in segments
+        if (seg["end"] - seg["start"]) <= min_seconds
+        or len(seg["text"]) / max(seg["end"] - seg["start"], 1e-6) >= min_chars_per_second
+    ]
+
+
+def _qwen_vad_blocks(total_seconds: float, windows: list, block_seconds: float = 60.0,
+                     min_speech_ratio: float = 0.02) -> list:
+    # VAD 粗筛:按 block_seconds 切块,块内 VAD 语音累计占比超过 min_speech_ratio 才保留该块。
+    # windows 为秒级 (start,end) 列表;返回保留块在原音频中的 [(start,end), ...]。
+    speech = [0.0] * (int(total_seconds // block_seconds) + 1)
+    for start, end in windows:
+        first = int(start // block_seconds)
+        last = int(end // block_seconds)
+        for idx in range(first, min(last + 1, len(speech))):
+            block_start = idx * block_seconds
+            speech[idx] += max(0.0, min(end, block_start + block_seconds) - max(start, block_start))
+    blocks = []
+    for idx, amount in enumerate(speech):
+        start = idx * block_seconds
+        if start >= total_seconds:
+            break
+        if amount / block_seconds >= min_speech_ratio:
+            blocks.append((start, min(start + block_seconds, total_seconds)))
+    return blocks
+
+
 def _qwen_result_dict(lang_code: str, segments: list):
     return {
         'lang': lang_code,
@@ -508,12 +562,47 @@ def Qwen3ASRResult(file_path: str, lang: str, fileName: str, returnList):
             print(f"\033[1;33m⚠️ 语言 {lang} 不在 Qwen3-ASR 支持表,回退自动识别\033[0m")
 
     try:
+        import numpy as np
+        import librosa
+
         use_gpu = bool(settings["gpu"]) and torch.cuda.is_available()
         device = "cuda:0" if use_gpu else "cpu"
         dtype = torch.bfloat16 if use_gpu else torch.float32
         print(f"\033[1;34m🖥️ 运行模型: Qwen3-ASR-1.7B + ForcedAligner\033[0m")
         print(f"\033[1;34m⚙️️ 运行方式: {device}\033[0m")
         print(f"\033[1;34m🌐 识别语言: {qwen_lang or '自动识别'}\033[0m")
+
+        wav = librosa.load(str(audio_path), sr=16000, mono=True)[0].astype(np.float32)
+        total_seconds = len(wav) / 16000
+        blocks = [(0.0, total_seconds)]
+        if bool(settings["vad_enabled"]):
+            try:
+                from faster_whisper.vad import get_vad_model, get_speech_timestamps, VadOptions
+                vad_windows = get_speech_timestamps(
+                    wav,
+                    VadOptions(threshold=float(settings["vad_threshold"]),
+                               min_silence_duration_ms=500, min_speech_duration_ms=250,
+                               speech_pad_ms=200),
+                )
+                windows_sec = [(w["start"] / 16000, w["end"] / 16000) for w in vad_windows]
+                blocks = _qwen_vad_blocks(
+                    total_seconds, windows_sec,
+                    block_seconds=float(settings["vad_block_seconds"]),
+                    min_speech_ratio=float(settings["vad_min_speech_ratio"]),
+                )
+                print(f"\033[1;34m🔇 VAD预筛: {len(windows_sec)} 个语音窗口, "
+                      f"送识别 {len(blocks)} 个音频块共 {sum(e-s for s,e in blocks):.0f}s "
+                      f"/ 全长 {total_seconds:.0f}s\033[0m")
+            except Exception as vad_err:
+                print(f"\033[1;33m⚠️ VAD 预筛失败,回退整段识别: {type(vad_err).__name__}: {vad_err}\033[0m")
+                blocks = [(0.0, total_seconds)]
+
+        if not blocks:
+            print("\033[1;33m⚠️ VAD 未检测到任何语音,跳过模型识别(纯非语音素材)\033[0m")
+            result = _qwen_result_dict(lang if lang and lang != "自动识别" else "", [])
+            returnList[0] = result
+            return result
+
         model = Qwen3ASRModel.from_pretrained(
             settings["asr_path"],
             forced_aligner=settings["aligner_path"],
@@ -522,21 +611,57 @@ def Qwen3ASRResult(file_path: str, lang: str, fileName: str, returnList):
             device_map=device,
             max_new_tokens=int(settings["max_new_tokens"]),
         )
-        results = model.transcribe(
-            audio=str(audio_path),
-            language=qwen_lang,
-            context=str(settings["context"]),
-            return_time_stamps=True,
+
+        Item = namedtuple("Item", ["text", "start_time", "end_time"])
+        all_items = []
+        detected_languages = []
+        batch_blocks = 8
+        for group_start in range(0, len(blocks), batch_blocks):
+            group = blocks[group_start:group_start + batch_blocks]
+            audios = [(wav[int(s * 16000):int(e * 16000)], 16000) for s, e in group]
+            transcriptions = model.transcribe(
+                audio=audios,
+                language=qwen_lang,
+                context=str(settings["context"]),
+                return_time_stamps=True,
+            )
+            for (block_offset, _), transcription in zip(group, transcriptions):
+                if transcription.language:
+                    detected_languages.append(transcription.language)
+                if transcription.time_stamps:
+                    for item in transcription.time_stamps.items:
+                        all_items.append(Item(
+                            item.text,
+                            float(item.start_time) + block_offset,
+                            float(item.end_time) + block_offset,
+                        ))
+            print(f"\033[1;34m   已处理 {min(group_start + batch_blocks, len(blocks))}/{len(blocks)} 块\033[0m")
+
+        items_before = len(all_items)
+        all_items = _qwen_filter_sparse_items(
+            all_items,
+            min_seconds=float(settings["sparse_item_min_seconds"]),
+            max_seconds_per_char=float(settings["sparse_item_max_seconds_per_char"]),
         )
-        transcription = results[0]
-        items = list(transcription.time_stamps.items) if transcription.time_stamps else []
+        sparse_dropped = items_before - len(all_items)
         segments = _qwen_items_to_segments(
-            items,
+            all_items,
             max_chars=int(settings["line_max_chars"]),
             gap_seconds=float(settings["line_gap_seconds"]),
             max_line_seconds=float(settings["line_max_seconds"]),
         )
-        detected_code = lang if lang and lang != "自动识别" else QWEN_LANG_REVERSE.get(transcription.language, "")
+        segments = _qwen_filter_sparse_segments(
+            segments,
+            min_seconds=float(settings["sparse_line_min_seconds"]),
+            min_chars_per_second=float(settings["sparse_line_min_chars_per_second"]),
+        )
+        if sparse_dropped:
+            print(f"\033[1;33m⚠️ 稀疏幻觉过滤: 丢弃 {sparse_dropped} 个被摊长的字符/词\033[0m")
+        if qwen_lang:
+            detected_code = lang
+        else:
+            merged_language = max(set(detected_languages), key=detected_languages.count) if detected_languages else ""
+            detected_code = QWEN_LANG_REVERSE.get(merged_language, "")
         result = _qwen_result_dict(detected_code, segments)
         if not segments:
             print("\033[1;33m⚠️ 未识别到任何语音片段(可能为纯静音/非语音素材)\033[0m")
