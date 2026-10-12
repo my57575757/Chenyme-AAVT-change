@@ -81,6 +81,16 @@ faster_temp = whispers["Faster"]["Temp"]  # faster_temp
 faster_prompt = whispers["Faster"]["Prompt"]  # faster_prompt
 faster_min_vad = whispers["Faster"]["min_vad"]  # faster_min_vad
 faster_beam_size = whispers["Faster"]["beam_size"]  # faster_beam_size
+faster_condition_prev = whispers["Faster"].get("condition_prev_text", False)
+faster_hallucination_silence = whispers["Faster"].get("hallucination_silence", 2.0)
+faster_no_speech_threshold = whispers["Faster"].get("no_speech_threshold", 0.6)
+faster_log_prob_threshold = whispers["Faster"].get("log_prob_threshold", -1.0)
+faster_compression_ratio_threshold = whispers["Faster"].get("compression_ratio_threshold", 2.4)
+faster_vad_threshold = whispers["Faster"].get("vad_threshold", 0.5)
+faster_drop_no_speech_prob = whispers["Faster"].get("drop_no_speech_prob", 0.85)
+faster_dedupe_repeat = whispers["Faster"].get("dedupe_repeat", True)
+faster_hotwords = whispers["Faster"].get("hotwords", "")
+faster_hallucination_phrases = "\n".join(whispers["Faster"].get("hallucination_phrases", []))
 
 faster_local_path = whispers["Faster_Local"]["path"]  # 模型路径
 faster_local_gpu = whispers["Faster_Local"]["GPU"]  # GPU 加速
@@ -89,6 +99,16 @@ faster_local_temp = whispers["Faster_Local"]["Temp"]  # 温度
 faster_local_prompt = whispers["Faster_Local"]["Prompt"]  # 提示词
 faster_local_min_vad = whispers["Faster_Local"]["min_vad"]  # 最小 VAD 持续时间
 faster_local_beam_size = whispers["Faster_Local"]["beam_size"]  # Beam Size
+faster_local_condition_prev = whispers["Faster_Local"].get("condition_prev_text", False)
+faster_local_hallucination_silence = whispers["Faster_Local"].get("hallucination_silence", 2.0)
+faster_local_no_speech_threshold = whispers["Faster_Local"].get("no_speech_threshold", 0.6)
+faster_local_log_prob_threshold = whispers["Faster_Local"].get("log_prob_threshold", -1.0)
+faster_local_compression_ratio_threshold = whispers["Faster_Local"].get("compression_ratio_threshold", 2.4)
+faster_local_vad_threshold = whispers["Faster_Local"].get("vad_threshold", 0.5)
+faster_local_drop_no_speech_prob = whispers["Faster_Local"].get("drop_no_speech_prob", 0.85)
+faster_local_dedupe_repeat = whispers["Faster_Local"].get("dedupe_repeat", True)
+faster_local_hotwords = whispers["Faster_Local"].get("hotwords", "")
+faster_local_hallucination_phrases = "\n".join(whispers["Faster_Local"].get("hallucination_phrases", []))
 video_local_path = whispers["Video_Local"]["path"]  # 视频路径
 
 log_setting = project["ffmpeg"]["log"]
@@ -313,6 +333,22 @@ with tab2:
             faster_prompt = st.text_input("提示词", faster_prompt)
             st.write("")
 
+            with st.expander("高级参数（幻觉抑制 / 热词）"):
+                st.caption("适合喘息、BGM、长无对白段较多的素材；调得太激进会吞掉小声台词，建议拿样片对照调整")
+                c1, c2 = st.columns(2)
+                with c1:
+                    faster_condition_prev = st.checkbox("承接上文", value=faster_condition_prev, help="关闭可防止幻觉句重复循环")
+                    faster_hallucination_silence = st.number_input("静音幻觉阈值 (s，0 关)", min_value=0.0, max_value=10.0, step=0.5, value=float(faster_hallucination_silence))
+                    faster_no_speech_threshold = st.number_input("无语音阈值", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_no_speech_threshold))
+                    faster_drop_no_speech_prob = st.number_input("事后丢弃 no_speech ≥", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_drop_no_speech_prob), help="1.0 关闭；越高越宽松")
+                with c2:
+                    faster_vad_threshold = st.number_input("VAD 灵敏度", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_vad_threshold), disabled=not faster_vad, help="越低越容易判为语音")
+                    faster_log_prob_threshold = st.number_input("置信度阈值", min_value=-2.0, max_value=0.0, step=0.1, value=float(faster_log_prob_threshold))
+                    faster_compression_ratio_threshold = st.number_input("压缩率阈值", min_value=1.0, max_value=5.0, step=0.1, value=float(faster_compression_ratio_threshold))
+                    faster_dedupe_repeat = st.checkbox("去除相邻重复行", value=faster_dedupe_repeat)
+                faster_hotwords = st.text_input("热词（演员名 / 片名 / 厂商名）", value=faster_hotwords, help="只对专有名词有效，通用词不用填。逗号分隔，如：三上悠亜, 桜空もも, S1, MOODYZ")
+                faster_hallucination_phrases = st.text_area("幻觉黑名单（每行一个，整行命中才丢弃）", value=faster_hallucination_phrases)
+
             with WhisperSave:
                 col1, col2 = st.columns([0.75, 0.3])
                 with col2:
@@ -330,6 +366,16 @@ with tab2:
                                 whispers["Faster"]["Prompt"] = faster_prompt
                                 whispers["Faster"]["min_vad"] = faster_min_vad
                                 whispers["Faster"]["beam_size"] = faster_beam_size
+                                whispers["Faster"]["condition_prev_text"] = faster_condition_prev
+                                whispers["Faster"]["hallucination_silence"] = faster_hallucination_silence
+                                whispers["Faster"]["no_speech_threshold"] = faster_no_speech_threshold
+                                whispers["Faster"]["log_prob_threshold"] = faster_log_prob_threshold
+                                whispers["Faster"]["compression_ratio_threshold"] = faster_compression_ratio_threshold
+                                whispers["Faster"]["vad_threshold"] = faster_vad_threshold
+                                whispers["Faster"]["drop_no_speech_prob"] = faster_drop_no_speech_prob
+                                whispers["Faster"]["dedupe_repeat"] = faster_dedupe_repeat
+                                whispers["Faster"]["hotwords"] = faster_hotwords
+                                whispers["Faster"]["hallucination_phrases"] = [line.strip() for line in faster_hallucination_phrases.splitlines() if line.strip()]
                                 toml.dump(whispers, f)
                             st.session_state.save = True
                             st.rerun()
@@ -357,6 +403,22 @@ with tab2:
             video_local_path = st.text_input("视频路径", value=video_local_path)
             st.write("")
 
+            with st.expander("高级参数（幻觉抑制 / 热词）"):
+                st.caption("适合喘息、BGM、长无对白段较多的素材；调得太激进会吞掉小声台词，建议拿样片对照调整")
+                c1, c2 = st.columns(2)
+                with c1:
+                    faster_local_condition_prev = st.checkbox("承接上文", value=faster_local_condition_prev, help="关闭可防止幻觉句重复循环")
+                    faster_local_hallucination_silence = st.number_input("静音幻觉阈值 (s，0 关)", min_value=0.0, max_value=10.0, step=0.5, value=float(faster_local_hallucination_silence))
+                    faster_local_no_speech_threshold = st.number_input("无语音阈值", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_local_no_speech_threshold))
+                    faster_local_drop_no_speech_prob = st.number_input("事后丢弃 no_speech ≥", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_local_drop_no_speech_prob), help="1.0 关闭；越高越宽松")
+                with c2:
+                    faster_local_vad_threshold = st.number_input("VAD 灵敏度", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_local_vad_threshold), disabled=not faster_local_vad, help="越低越容易判为语音")
+                    faster_local_log_prob_threshold = st.number_input("置信度阈值", min_value=-2.0, max_value=0.0, step=0.1, value=float(faster_local_log_prob_threshold))
+                    faster_local_compression_ratio_threshold = st.number_input("压缩率阈值", min_value=1.0, max_value=5.0, step=0.1, value=float(faster_local_compression_ratio_threshold))
+                    faster_local_dedupe_repeat = st.checkbox("去除相邻重复行", value=faster_local_dedupe_repeat)
+                faster_local_hotwords = st.text_input("热词（演员名 / 片名 / 厂商名）", value=faster_local_hotwords, help="只对专有名词有效，通用词不用填。逗号分隔，如：三上悠亜, 桜空もも, S1, MOODYZ")
+                faster_local_hallucination_phrases = st.text_area("幻觉黑名单（每行一个，整行命中才丢弃）", value=faster_local_hallucination_phrases)
+
             with WhisperSave:
                 col1, col2 = st.columns([0.75, 0.3])
                 with col2:
@@ -372,6 +434,16 @@ with tab2:
                             whispers["Faster_Local"]["Prompt"] = faster_local_prompt
                             whispers["Faster_Local"]["min_vad"] = faster_local_min_vad
                             whispers["Faster_Local"]["beam_size"] = faster_local_beam_size
+                            whispers["Faster_Local"]["condition_prev_text"] = faster_local_condition_prev
+                            whispers["Faster_Local"]["hallucination_silence"] = faster_local_hallucination_silence
+                            whispers["Faster_Local"]["no_speech_threshold"] = faster_local_no_speech_threshold
+                            whispers["Faster_Local"]["log_prob_threshold"] = faster_local_log_prob_threshold
+                            whispers["Faster_Local"]["compression_ratio_threshold"] = faster_local_compression_ratio_threshold
+                            whispers["Faster_Local"]["vad_threshold"] = faster_local_vad_threshold
+                            whispers["Faster_Local"]["drop_no_speech_prob"] = faster_local_drop_no_speech_prob
+                            whispers["Faster_Local"]["dedupe_repeat"] = faster_local_dedupe_repeat
+                            whispers["Faster_Local"]["hotwords"] = faster_local_hotwords
+                            whispers["Faster_Local"]["hallucination_phrases"] = [line.strip() for line in faster_local_hallucination_phrases.splitlines() if line.strip()]
                             whispers["Video_Local"]["path"] = video_local_path
                             toml.dump(whispers, f)
                         st.session_state.save = True

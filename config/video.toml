@@ -1,7 +1,7 @@
 [whisper]
 language_list = [ "自动识别", "zh", "en", "ja", "th", "de", "fr", "ru", "ko", "vi", "it", "ar", "es", "bn", "pt", "hi",]
 openai_whisper_model_list = [ "whisper-1",]
-faster_whisper_model_list = [ "tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v1", "large-v2", "large-v3", "large", "distil-small.en", "distil-medium.en", "distil-large-v2", "distil-large-v3",]
+faster_whisper_model_list = [ "tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v1", "large-v2", "large-v3", "large-v3-turbo", "large", "distil-small.en", "distil-medium.en", "distil-large-v2", "distil-large-v3",]
 language_index = "自动识别"
 openai_whisper_model_index = "whisper-1"
 faster_whisper_model_index = "base"

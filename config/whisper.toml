@@ -7,11 +7,21 @@ Prompt = "Don't make each line too long."
 
 [Faster]
 GPU = false
-VAD = false
+VAD = true
 Temp = 0.8
 Prompt = "Don't make each line too long."
 min_vad = 500
 beam_size = 5
+condition_prev_text = false
+hallucination_silence = 2.0
+no_speech_threshold = 0.6
+log_prob_threshold = -1.0
+compression_ratio_threshold = 2.4
+vad_threshold = 0.5
+drop_no_speech_prob = 0.85
+dedupe_repeat = true
+hotwords = ""
+hallucination_phrases = [ "ありがとうございました", "ご視聴ありがとうございました", "ご視聴ありがとうございます", "最後までご視聴ありがとうございました", "ご清聴ありがとうございました", "チャンネル登録お願いします", "高評価とチャンネル登録をお願いします", "また次回お会いしましょう", "感谢观看", "谢谢观看", "请订阅频道", "感谢您的观看", "Thank you for watching.", "Thanks for watching.", "Please subscribe.", "Please like and subscribe.", "Subtitles by Amara.org", "Transcription by CastingWords", "DimaTorzok",]
 
 [Faster_Local]
 path = "D:\\project\\AAVT/model/faster-whisper"
@@ -21,6 +31,16 @@ Temp = 0.8
 Prompt = "Don't make each line too long."
 min_vad = 500
 beam_size = 5
+condition_prev_text = false
+hallucination_silence = 2.0
+no_speech_threshold = 0.6
+log_prob_threshold = -1.0
+compression_ratio_threshold = 2.4
+vad_threshold = 0.5
+drop_no_speech_prob = 0.85
+dedupe_repeat = true
+hotwords = ""
+hallucination_phrases = [ "ありがとうございました", "ご視聴ありがとうございました", "ご視聴ありがとうございます", "最後までご視聴ありがとうございました", "ご清聴ありがとうございました", "チャンネル登録お願いします", "高評価とチャンネル登録をお願いします", "また次回お会いしましょう", "感谢观看", "谢谢观看", "请订阅频道", "感谢您的观看", "Thank you for watching.", "Thanks for watching.", "Please subscribe.", "Please like and subscribe.", "Subtitles by Amara.org", "Transcription by CastingWords", "DimaTorzok",]
 
 [other]
 first = true

@@ -389,9 +389,9 @@ with tab1:
                 if whisper_mode == "OpenAIWhisper - API":
                     result = OpenaiWhisperResult(chatgpt_key, chatgpt_url, f"{output_file}/{st.session_state.audio_name}", openai_whisper_model_index, whisper_prompt, whisper_temp)
                 if whisper_mode == "FasterWhisper - AutoDownload":
-                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size,st.session_state.audio_name, faster_min_vad)
+                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size, faster_min_vad, st.session_state.audio_name)
                 if whisper_mode == "FasterWhisper - LocalModel":
-                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size,st.session_state.audio_name, faster_local_min_vad)
+                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad, st.session_state.audio_name)
                 if 'error' in result:
                     print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
                     st.error(f"处理失败，错误信息：{result['error']}")

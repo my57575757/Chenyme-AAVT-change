@@ -183,11 +183,96 @@ def FasterWhisperResultDict(segments, info):
     }
 
 
-def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: str, temp: float, vad: bool, lang: str,
-                        beam_size: int, min_vad: int,fileName: str, returnList):
-    valid_models = ['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v1',
-                    'large-v2', 'large-v3', 'large', 'distil-small.en', 'distil-medium.en', 'distil-large-v2',
-                    'distil-large-v3']
+FASTER_VALID_MODELS = ('tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v1',
+                       'large-v2', 'large-v3', 'large-v3-turbo', 'large', 'distil-small.en', 'distil-medium.en',
+                       'distil-large-v2', 'distil-large-v3')
+
+FASTER_ADVANCED_DEFAULTS = {
+    "condition_prev_text": False,       # 关闭上文承接,防重复句幻觉
+    "hallucination_silence": 2.0,       # 秒,0 关闭;片段开头静音即丢弃
+    "no_speech_threshold": 0.6,
+    "log_prob_threshold": -1.0,
+    "compression_ratio_threshold": 2.4,
+    "vad_threshold": 0.5,
+    "drop_no_speech_prob": 0.85,        # 事后过滤:1.0 关闭
+    "dedupe_repeat": True,              # 事后过滤:去掉相邻重复行
+    "hotwords": "",
+    "hallucination_phrases": [
+        # 日语 YouTube 片尾/频道套话类幻觉(社区实测高频,正片不可能出现)
+        "ありがとうございました",
+        "ご視聴ありがとうございました",
+        "ご視聴ありがとうございます",
+        "最後までご視聴ありがとうございました",
+        "ご清聴ありがとうございました",
+        "チャンネル登録お願いします",
+        "高評価とチャンネル登録をお願いします",
+        "また次回お会いしましょう",
+        # 中文同类
+        "感谢观看",
+        "谢谢观看",
+        "请订阅频道",
+        "感谢您的观看",
+        # 英语片尾套话 / 字幕站署名幻觉
+        "Thank you for watching.",
+        "Thanks for watching.",
+        "Please subscribe.",
+        "Please like and subscribe.",
+        "Subtitles by Amara.org",
+        "Transcription by CastingWords",
+        "DimaTorzok",
+    ],
+}
+
+
+def _load_faster_advanced_settings(model_name: str) -> dict:
+    # 高级参数从 config/whisper.toml 读取,避免改 FasterWhisperResult 的位置参数(调用点多且 audio 页历史上有传参顺序坑)
+    settings = dict(FASTER_ADVANCED_DEFAULTS)
+    section = "Faster" if model_name in FASTER_VALID_MODELS else "Faster_Local"
+    config_path = Path(__file__).resolve().parent.parent / "config" / "whisper.toml"
+    try:
+        with open(config_path, 'r', encoding="utf-8") as f:
+            raw = toml.load(f).get(section, {})
+        for key in settings:
+            if key in raw:
+                settings[key] = raw[key]
+    except Exception as e:
+        print(f"\033[1;33m⚠️ 高级识别参数读取失败,使用默认值: {type(e).__name__}: {e}\033[0m")
+    return settings
+
+
+def _is_phantom_text(text: str, phrases) -> bool:
+    normalized = text.strip().strip("。.!?！？…・、, \t\r\n")
+    if not normalized:
+        return True
+    return any(p.strip() and normalized == p.strip() for p in phrases)
+
+
+def _filter_hallucinated_segments(segments: list, settings: dict) -> list:
+    kept = []
+    dropped = 0
+    prev_norm = None
+    for seg in segments:
+        text = seg.text.strip()
+        if settings["drop_no_speech_prob"] < 1.0 and seg.no_speech_prob >= settings["drop_no_speech_prob"]:
+            dropped += 1
+            continue
+        if _is_phantom_text(text, settings["hallucination_phrases"]):
+            dropped += 1
+            continue
+        norm = re.sub(r"\s+", "", text)
+        if settings["dedupe_repeat"] and norm and norm == prev_norm:
+            dropped += 1
+            continue
+        prev_norm = norm
+        kept.append(seg)
+    if dropped:
+        print(f"\033[1;33m⚠️ 幻觉过滤: 丢弃 {dropped} 个可疑片段\033[0m")
+    return kept
+
+
+def FasterWhisperResult(file_path: str, device: bool, model_name: str, prompt: str, temp: float, vad: bool, lang: str,
+                        beam_size: int, min_vad: int, fileName: str, returnList):
+    valid_models = FASTER_VALID_MODELS
     if device:
         device = "cuda"
     else:
@@ -214,20 +299,35 @@ def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: st
     try:
         with audio_file:
             model = WhisperModel(model_name, device)
+            settings = _load_faster_advanced_settings(model_name)
             transcribe_args = {
                 "initial_prompt": prompt,
                 "beam_size": beam_size,
-                "temperature": temp
+                "temperature": temp,
+                "condition_on_previous_text": settings["condition_prev_text"],
+                "no_speech_threshold": settings["no_speech_threshold"],
+                "log_prob_threshold": settings["log_prob_threshold"],
+                "compression_ratio_threshold": settings["compression_ratio_threshold"],
             }
+            if settings["hallucination_silence"] > 0:
+                transcribe_args["hallucination_silence_threshold"] = settings["hallucination_silence"]
+            if str(settings["hotwords"]).strip():
+                transcribe_args["hotwords"] = str(settings["hotwords"]).strip()
             if vad:
                 transcribe_args.update({
                     "vad_filter": vad,
-                    "vad_parameters": dict(min_silence_duration_ms=min_vad)
+                    "vad_parameters": dict(
+                        threshold=settings["vad_threshold"],
+                        min_silence_duration_ms=min_vad)
                 })
             if lang != "自动识别":
                 transcribe_args["language"] = lang
 
+            print(f"\033[1;34m🛡️ 幻觉抑制: 上文承接={settings['condition_prev_text']}, "
+                  f"静音阈值={settings['hallucination_silence']}s, 事后丢弃no_speech≥"
+                  f"{settings['drop_no_speech_prob']}, 去重={settings['dedupe_repeat']}\033[0m")
             segments, info = model.transcribe(audio_file, **transcribe_args)
+            segments = _filter_hallucinated_segments(list(segments), settings)
 
         result = FasterWhisperResultDict(segments, info)
         print(f"\033[1;34m📝 Whisper识别结果:\033[0m\n{result['text']}")
