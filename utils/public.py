@@ -18,6 +18,7 @@ import shutil
 import toml
 import torch
 import base64
+import traceback
 import streamlit as st
 from typing import List
 from multiprocessing import Process, Manager
@@ -258,9 +259,11 @@ def runWhisperSeperateProc(*args):
             p.close()
             return returnList[0]
     except Exception as e:
-        print(f"An error occurred during transcription: {e}")
-        st.error(f"An error occurred during transcription: {e}")
-        st.stop()
+        # 不调用 st.stop():目录批量调用方依赖 error dict 决定 continue,
+        # st.stop() 会静默终止整个批量脚本(无红框、无 traceback)
+        print(f"\033[1;31m❌ Whisper 独立进程异常: {type(e).__name__}: {e}\033[0m")
+        traceback.print_exc()
+        return {"error": f"Whisper 独立进程异常: {type(e).__name__}: {e}"}
 
 
 
@@ -1046,4 +1049,7 @@ def readSrt(srtName):
 
 def get_duration_from_moviepy(url):
     clip = VideoFileClip(url)
-    return clip.duration
+    try:
+        return clip.duration
+    finally:
+        clip.close()

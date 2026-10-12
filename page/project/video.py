@@ -4,6 +4,7 @@ import json
 import toml
 import time
 import datetime
+import traceback
 import streamlit as st
 from openai import OpenAI
 from pydantic import BaseModel
@@ -81,6 +82,10 @@ chatglm_url = llms["ChatGLM"]["url"]
 
 ai01_key = llms["Yi"]["key"]  # 01
 ai01_url = llms["Yi"]["url"]
+
+sichang_key = llms["SiChang"]["key"]  # sichang
+sichang_url = llms["SiChang"]["url"]
+sichang_model = llms["SiChang"]["model"]
 
 whisper_mode = whispers["Mode"]["WhisperMode"]  # whisper_mode
 
@@ -173,7 +178,8 @@ translation_dict = {
     (30, 35): 'yi-large',
     (30, 36): 'yi-large-rag',
     (30, 37): 'yi-large-turbo',
-    (30, 38): 'yi-large-preview'
+    (30, 38): 'yi-large-preview',
+    (39, 40): 'sichang'
 }
 
 
@@ -302,6 +308,8 @@ with tab4:
                 sac.CasItem('yi-large-rag', icon='folder2-open'),
                 sac.CasItem('yi-large-turbo', icon='folder2-open'),
                 sac.CasItem('yi-large-preview', icon='folder2-open')]),
+            sac.CasItem('思畅 AI / SiChang', icon='folder2', children=[
+                sac.CasItem('已配置模型', icon='folder2-open')]),
         ], label='', search=True, index=video_translate_index, return_index=True)
         if video_translate_index != [0]:
             st.write("")
@@ -409,6 +417,8 @@ with tab4:
                 sac.CasItem('yi-large-rag', icon='folder2-open'),
                 sac.CasItem('yi-large-turbo', icon='folder2-open'),
                 sac.CasItem('yi-large-preview', icon='folder2-open')]),
+            sac.CasItem('思畅 AI / SiChang', icon='folder2', children=[
+                sac.CasItem('已配置模型', icon='folder2-open')]),
         ], label='', search=True, index=blog_write_index, return_index=True)
         st.write("")
         st.write("###### 写作视角")
@@ -520,16 +530,23 @@ with tab1:
                     print("\033[1;33m⚠️ 请不要在任务运行期间切换菜单或修改参数！\033[0m")
                     msg_ved.toast("视频预处理完成", icon=":material/movie:")
                     # 判断视频大小小于100m不生成字幕
-                    size = get_file_size(filePath)
-                    if size<104857600:
-                        print('视频小于100m')
+                    try:
+                        size = get_file_size(filePath)
+                        if size<104857600:
+                            print('视频小于100m')
+                            continue
+                        # 判断视频时长是否大于5分钟,小于则不生成字幕
+                        time = get_duration_from_moviepy(filePath)
+                        if time<300:
+                            print('时长不足5分钟')
+                            continue
+                        FileToMp3(log_setting, filePath, output_file)
+                    except Exception:
+                        if os.path.exists(output_file + "/output.mp3"):
+                            os.remove(output_file + "/output.mp3")
+                        print(f"\033[1;31m❌ 预处理失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
+                        traceback.print_exc()
                         continue
-                    # 判断视频时长是否大于5分钟,小于则不生成字幕
-                    time = get_duration_from_moviepy(filePath)
-                    if time<300:
-                        print('时长不足5分钟')
-                        continue
-                    FileToMp3(log_setting, filePath, output_file)
                     msg_whs = st.toast("正在识别视频内容", icon=":material/troubleshoot:")
                     # 判断是否有原语言文件
                     if os.path.exists(srtOldName):
@@ -589,6 +606,9 @@ with tab1:
                             elif 'deepseek' in translate_option:
                                 result = translate_srt(system_prompt, user_prompt, deepseek_key, deepseek_url,
                                                        translate_option, srt_content, video_wait_time_setting, srt_setting)
+                            elif 'sichang' in translate_option:
+                                result = translate_srt(system_prompt, user_prompt, sichang_key, sichang_url,
+                                                       sichang_model, srt_content, video_wait_time_setting, srt_setting)
                             elif 'claude' in translate_option:
                                 result = translate_srt(system_prompt, user_prompt, claude_key, chatglm_url,
                                                        translate_option, srt_content, video_wait_time_setting, srt_setting)
@@ -623,6 +643,9 @@ with tab1:
                                 elif 'deepseek' in translate_option:
                                     result = translate(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option,
                                                        result, video_wait_time_setting, srt_setting)
+                                elif 'sichang' in translate_option:
+                                    result = translate(system_prompt, user_prompt, sichang_key, sichang_url, sichang_model,
+                                                       result, video_wait_time_setting, srt_setting)
                                 elif 'claude' in translate_option:
                                     result = translate(system_prompt, user_prompt, claude_key, claude_url, translate_option,
                                                        result, video_wait_time_setting, srt_setting)
@@ -640,12 +663,29 @@ with tab1:
                         print(f"\033[1;33m💬 模型回复: {e}\033[0m")
                         st.toast("该视频触发内容安全策略,已跳过翻译字幕生成", icon=":material/block:")
                         continue
+                    except Exception:
+                        # 翻译阶段任何其他异常(API 超时/网络/返回格式等)都不允许终止整个批量任务
+                        if os.path.exists(output_file + "/output.mp3"):
+                            os.remove(output_file + "/output.mp3")
+                        print(f"\033[1;31m❌ 翻译失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
+                        traceback.print_exc()
+                        st.toast("该视频翻译失败,已跳过并继续下一个", icon=":material/error:")
+                        continue
 
-                    with open(srtZhName, 'w', encoding='utf-8') as srt_file:
-                        srt_file.write(srt_content)
+                    try:
+                        with open(srtZhName, 'w', encoding='utf-8') as srt_file:
+                            srt_file.write(srt_content)
+                    except Exception:
+                        # 写入失败(磁盘/NAS 抖动):删除残缺字幕,允许下次重跑,不中断整批
+                        if os.path.exists(srtZhName):
+                            os.remove(srtZhName)
+                        print(f"\033[1;31m❌ 翻译字幕写入失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
+                        traceback.print_exc()
+                        continue
                     st.session_state.output_file = output_file
                     # 删除mp3
-                    os.remove(output_file+"/output.mp3")
+                    if os.path.exists(output_file+"/output.mp3"):
+                        os.remove(output_file+"/output.mp3")
                     print("\033[1;34m🎉 任务成功结束！\033[0m")
                     print("\n" + "=" * 50 + "\n")
             elif "uploaded_file_video" in st.session_state:
@@ -701,6 +741,8 @@ with tab1:
                             result = translate(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option, result, video_wait_time_setting, srt_setting)
                         elif 'deepseek' in translate_option:
                             result = translate(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option, result, video_wait_time_setting, srt_setting)
+                        elif 'sichang' in translate_option:
+                            result = translate(system_prompt, user_prompt, sichang_key, sichang_url, sichang_model, result, video_wait_time_setting, srt_setting)
                         elif 'claude' in translate_option:
                             result = translate(system_prompt, user_prompt, claude_key, claude_url, translate_option, result, video_wait_time_setting, srt_setting)
                     except TranslationRefused as e:
@@ -959,6 +1001,8 @@ with tab2:
                                 result = translate(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option, result, video_wait_time_setting, srt_setting)
                             elif 'deepseek' in translate_option:
                                 result = translate(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option, result, video_wait_time_setting, srt_setting)
+                            elif 'sichang' in translate_option:
+                                result = translate(system_prompt, user_prompt, sichang_key, sichang_url, sichang_model, result, video_wait_time_setting, srt_setting)
                             elif 'claude' in translate_option:
                                 result = translate(system_prompt, user_prompt, claude_key, claude_url, translate_option, result, video_wait_time_setting, srt_setting)
                         except TranslationRefused as e:
@@ -1152,6 +1196,8 @@ with tab3:
                     content = write_llms(blog_view, blog_language, chatglm_key, chatglm_url, write_model, text, blog_token, blog_temp)
                 elif 'deepseek' in write_model:
                     content = write_llms(blog_view, blog_language, deepseek_key, deepseek_url, write_model, text, blog_token, blog_temp)
+                elif 'sichang' in write_model:
+                    content = write_llms(blog_view, blog_language, sichang_key, sichang_url, sichang_model, text, blog_token, blog_temp)
                 elif 'claude' in write_model:
                     content = write_llms(blog_view, blog_language, claude_key, chatgpt_key, write_model, text, blog_token, blog_temp)
                 msg_wrt.toast("写作任务完成", icon=":material/colorize:")

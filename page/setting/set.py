@@ -9,6 +9,7 @@ import anthropic
 from openai import OpenAI
 import google.generativeai as genai
 import shutil
+import requests
 style()
 
 path = os.getcwd() + "/"
@@ -65,6 +66,10 @@ chatglm_url = llms["ChatGLM"]["url"]
 
 ai01_key = llms["Yi"]["key"]  # 01
 ai01_url = llms["Yi"]["url"]
+
+sichang_key = llms["SiChang"]["key"]  # sichang
+sichang_url = llms["SiChang"]["url"]
+sichang_model = llms["SiChang"]["model"]
 
 whisper_mode = whispers["Mode"]["WhisperMode"]  # whisper_mode
 whisper_temp = whispers["OpenAI"]["Temp"]  # whisper_temp
@@ -615,6 +620,87 @@ with tab3:
                         st.success("**保存成功！**", icon=":material/check:")
                         del st.session_state["save_success"]
                 ai01_setting(ai01_url, ai01_key)
+
+        st.write("")
+
+        with st.container(border=True):
+            st.write("##### SiChang 思畅 AI")
+            st.write("调用思畅 AI 的 OpenAI 兼容接口来作为项目的翻译引擎")
+            if st.button("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**配置**&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;", key="sichang_button", type="primary"):
+                @st.dialog('SICHANG 思畅 AI')
+                def sichang_setting(url, key, model):
+                    st.write("官方网址：**[sichang.xyz](https://sichang.xyz/)** \n\n 思畅 AI 是自由的 AI 创作平台，文本对话接口兼容 OpenAI Chat Completions，按 token 计费；模型列表由接口实时返回，填入密钥后点击「获取模型列表」即可下拉选择。")
+                    st.write("")
+
+                    @st.fragment()
+                    def sichang_form():
+                        url = st.text_input("**API 地址**", url, placeholder="SiChang API 接口", help="默认值：`https://sichang.xyz/api/v1`")
+                        key = st.text_input("**API 密钥**", key, placeholder="思畅 API 密钥（sc_ 开头，需勾选文本对话权限）")
+                        st.write("")
+                        if st.button("**获取模型列表**", use_container_width=True, type="primary"):
+                            if not key:
+                                st.toast("请先填写 API 密钥！", icon=":material/release_alert:")
+                            elif not url:
+                                st.toast("请先填写 API 地址！", icon=":material/release_alert:")
+                            else:
+                                try:
+                                    resp = requests.get(
+                                        url.rstrip('/') + '/models',
+                                        headers={"Authorization": f"Bearer {key}"},
+                                        timeout=20)
+                                    payload = resp.json()
+                                    if resp.status_code != 200:
+                                        message = payload.get("error", {}).get("message", f"HTTP {resp.status_code}")
+                                        st.error(f"**获取模型失败：{message}**", icon=":material/error:")
+                                    else:
+                                        raw_models = payload.get("data") or payload.get("models") or []
+                                        models = [(m.get("id") if isinstance(m, dict) else str(m)) for m in raw_models]
+                                        models = [m for m in models if m]
+                                        if models:
+                                            st.session_state.sichang_models = models
+                                            st.toast(f"已获取 {len(models)} 个模型", icon=":material/check:")
+                                        else:
+                                            st.error("**接口返回中未找到模型列表**", icon=":material/error:")
+                                except Exception as e:
+                                    st.error(f"**获取模型失败：{type(e).__name__}: {e}**", icon=":material/error:")
+                        st.write("")
+                        models = st.session_state.get("sichang_models", [])
+                        if models:
+                            model_index = models.index(model) if model in models else 0
+                            model = st.selectbox("**模型名称**", models, index=model_index,
+                                                 help="来自 GET /v1/models 接口的实时返回，模型更新后重新获取即可")
+                        else:
+                            st.text_input("**模型名称**", model, placeholder="请先点击上方按钮获取模型列表", disabled=True)
+                        st.write("")
+                        if st.button("**保存配置**", use_container_width=True, type="primary"):
+                            if not model:
+                                st.toast("请先获取并选择模型！", icon=":material/release_alert:")
+                            else:
+                                with open(llms_path, 'w') as f:
+                                    llms["SiChang"]["url"] = url
+                                    llms["SiChang"]["key"] = key
+                                    llms["SiChang"]["model"] = model
+                                    toml.dump(llms, f)
+                                    st.session_state.sichang_save_success = True
+                        if st.button("**接口测试**", use_container_width=True, type="primary"):
+                            if not model:
+                                st.toast("请先获取并选择模型！", icon=":material/release_alert:")
+                            else:
+                                try:
+                                    client = OpenAI(api_key=key, base_url=url)
+                                    response = client.chat.completions.create(
+                                        model=model,
+                                        messages=[{"role": "user", "content": "测试"}])
+                                    answer = response.choices[0].message.content
+                                    st.success("**测试成功！**", icon=":material/check:")
+                                except Exception as e:
+                                    st.error(f"**测试失败：{e}**", icon=":material/error:")
+                        if st.session_state.get("sichang_save_success"):
+                            st.success("**保存成功！**", icon=":material/check:")
+                            del st.session_state["sichang_save_success"]
+
+                    sichang_form()
+                sichang_setting(sichang_url, sichang_key, sichang_model)
 
     with col2:
         with st.container(border=True):

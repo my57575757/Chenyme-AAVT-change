@@ -46,6 +46,11 @@ url = "https://open.bigmodel.cn/api/paas/v4/"
 key = ""
 url = "https://api.lingyiwanwu.com/v1"
 
+[SiChang]
+key = ""
+url = "https://sichang.xyz/api/v1"
+model = ""
+
 [translate]
 context_size = 2
 summarize = false

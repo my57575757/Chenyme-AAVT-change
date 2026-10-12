@@ -76,6 +76,10 @@ chatglm_url = llms["ChatGLM"]["url"]
 ai01_key = llms["Yi"]["key"]  # 01
 ai01_url = llms["Yi"]["url"]
 
+sichang_key = llms["SiChang"]["key"]  # sichang
+sichang_url = llms["SiChang"]["url"]
+sichang_model = llms["SiChang"]["model"]
+
 whisper_mode = whispers["Mode"]["WhisperMode"]  # whisper_mode
 
 whisper_temp = whispers["OpenAI"]["Temp"]  # whisper_temp
@@ -148,7 +152,8 @@ translation_dict = {
     (30, 35): 'yi-large',
     (30, 36): 'yi-large-rag',
     (30, 37): 'yi-large-turbo',
-    (30, 38): 'yi-large-preview'
+    (30, 38): 'yi-large-preview',
+    (39, 40): 'sichang'
 }
 
 
@@ -276,6 +281,8 @@ with tab2:
                 sac.CasItem('yi-large-rag', icon='folder2-open'),
                 sac.CasItem('yi-large-turbo', icon='folder2-open'),
                 sac.CasItem('yi-large-preview', icon='folder2-open')]),
+            sac.CasItem('思畅 AI / SiChang', icon='folder2', children=[
+                sac.CasItem('已配置模型', icon='folder2-open')]),
         ], label='', search=True, index=translate_index, return_index=True)
         if translate_index != [0]:
             st.write("")
@@ -410,6 +417,8 @@ with tab1:
                             result = translate(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option, result, wait_time_setting, srt_setting)
                         elif 'deepseek' in translate_option:
                             result = translate(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option, result, wait_time_setting, srt_setting)
+                        elif 'sichang' in translate_option:
+                            result = translate(system_prompt, user_prompt, sichang_key, sichang_url, sichang_model, result, wait_time_setting, srt_setting)
                         elif 'claude' in translate_option:
                             result = translate(system_prompt, user_prompt, claude_key, claude_url, translate_option, result, wait_time_setting, srt_setting)
                     except TranslationRefused as e:
