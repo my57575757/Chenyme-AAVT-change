@@ -371,23 +371,25 @@ def _batch_translate(system_prompt, user_prompt, texts, send, wait_time=0,
     chunks = list(_chunk_translation_items(texts, max_lines, max_chars))
     total = len(chunks)
     for chunk_index, items in enumerate(chunks):
-        refused = 0
         try:
             mapping = _translate_chunk(system_prompt, user_prompt, items, send)
-        except (TranslationRefused, ValueError):
-            # 整批被安全策略拒答或输出无法对齐时,逐条重试以隔离问题条目,被拒条目保留原文
+        except TranslationRefused:
+            # 整批被安全策略拒答:不产出半成品,交由上层跳过该文件的翻译 SRT
+            raise
+        except ValueError:
+            # 整批输出无法对齐(截断/格式漂移):逐条重试以隔离问题条目
             mapping = {}
             for index, original in items:
                 try:
                     mapping[index] = _translate_one(system_prompt, user_prompt, index, original, send)
-                except (TranslationRefused, ValueError):
+                except TranslationRefused:
+                    raise
+                except ValueError:
                     mapping[index] = original
-                    refused += 1
-            print(f"\033[1;33m⚠️ 本批 {len(items)} 条整批失败,已逐条重试,{refused} 条保留原文\033[0m")
+            print(f"\033[1;33m⚠️ 本批 {len(items)} 条整批无法对齐,已逐条重试\033[0m")
         for index, _ in items:
             translations[index] = mapping[index]
-        print(f"\033[1;34m📦 批量翻译进度: {chunk_index + 1}/{total} 块(本块 {len(items)} 条"
-              + (f",{refused} 条未译" if refused else "") + ")\033[0m")
+        print(f"\033[1;34m📦 批量翻译进度: {chunk_index + 1}/{total} 块(本块 {len(items)} 条)\033[0m")
         if wait_time and chunk_index < total - 1:
             time.sleep(wait_time)
     return translations

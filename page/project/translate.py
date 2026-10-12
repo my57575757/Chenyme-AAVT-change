@@ -7,7 +7,7 @@ from io import StringIO
 from styles.global_style import style
 import streamlit_antd_components as sac
 from utils.public import (parse_srt_file, convert_to_srt, read_srt_file, local_translate_srt, translate_srt,
-                          srt_to_sbv, srt_to_vtt, srt_to_ass)
+                          srt_to_sbv, srt_to_vtt, srt_to_ass, TranslationRefused)
 
 style()
 path = os.getcwd() + "/"
@@ -291,22 +291,27 @@ with tab1:
                 translate_option = translation_dict[tuple(translate_index)]
 
                 msg_tra = st.toast("正在翻译字幕", icon=":material/translate:")
-                if '本地模型' in translate_option:
-                    result = local_translate_srt(system_prompt, user_prompt, local_key, local_url, local_model, srt_content, srt_setting)
-                elif 'gemini' in translate_option:
-                    result = translate_srt(system_prompt, user_prompt, gemini_key, gemini_url, translate_option, srt_content, wait_time_setting, srt_setting)
-                elif 'yi' in translate_option:
-                    result = translate_srt(system_prompt, user_prompt, ai01_key, ai01_url, translate_option, srt_content, wait_time_setting, srt_setting)
-                elif 'gpt' in translate_option:
-                    result = translate_srt(system_prompt, user_prompt, chatgpt_key, chatgpt_url, translate_option, srt_content, wait_time_setting, srt_setting)
-                elif 'moonshot' in translate_option:
-                    result = translate_srt(system_prompt, user_prompt, kimi_key, kimi_base, translate_option, srt_content, wait_time_setting, srt_setting)
-                elif 'glm' in translate_option:
-                    result = translate_srt(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option, srt_content, wait_time_setting, srt_setting)
-                elif 'deepseek' in translate_option:
-                    result = translate_srt(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option, srt_content, wait_time_setting, srt_setting)
-                elif 'claude' in translate_option:
-                    result = translate_srt(system_prompt, user_prompt, claude_key, chatglm_url, translate_option, srt_content, wait_time_setting, srt_setting)
+                try:
+                    if '本地模型' in translate_option:
+                        result = local_translate_srt(system_prompt, user_prompt, local_key, local_url, local_model, srt_content, srt_setting)
+                    elif 'gemini' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, gemini_key, gemini_url, translate_option, srt_content, wait_time_setting, srt_setting)
+                    elif 'yi' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, ai01_key, ai01_url, translate_option, srt_content, wait_time_setting, srt_setting)
+                    elif 'gpt' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, chatgpt_key, chatgpt_url, translate_option, srt_content, wait_time_setting, srt_setting)
+                    elif 'moonshot' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, kimi_key, kimi_base, translate_option, srt_content, wait_time_setting, srt_setting)
+                    elif 'glm' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option, srt_content, wait_time_setting, srt_setting)
+                    elif 'deepseek' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option, srt_content, wait_time_setting, srt_setting)
+                    elif 'claude' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, claude_key, chatglm_url, translate_option, srt_content, wait_time_setting, srt_setting)
+                except TranslationRefused as e:
+                    print(f"\033[1;33m⚠️ 触发内容安全策略,跳过翻译字幕生成: {e}\033[0m")
+                    st.error("翻译模型因内容安全策略拒绝翻译,已跳过翻译字幕生成。", icon=":material/block:")
+                    st.stop()
                 print("\033[1;34m🎉 字幕翻译已完成！\033[0m")
                 msg_tra.toast("翻译任务结束！", icon=":material/translate:")
 

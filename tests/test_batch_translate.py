@@ -136,22 +136,48 @@ class RefusalTests(unittest.TestCase):
         self.assertFalse(public._looks_like_refusal("1|你好\n2|世界"))
         self.assertFalse(public._looks_like_refusal("你好"))
 
-    def test_batch_refusal_falls_back_per_line(self):
-        texts = ["你好", "露骨内容A", "再见"]
+    def test_batch_refusal_raises_without_per_line_retry(self):
+        # 整批被安全策略拒答:直接上抛,不再逐条重试,不产出保留原文的半成品
+        texts = ["你好", "内容A", "再见"]
+        calls = []
 
         def fake_send(system_prompt, user_content):
-            # 整批请求:拒答
+            calls.append(user_content)
+            return "抱歉，我不能协助翻译此类内容。"
+
+        with self.assertRaises(public.TranslationRefused):
+            public._batch_translate("SYS", "{subtitles}", texts, fake_send, wait_time=0)
+        self.assertEqual(len(calls), 1)  # 整批仅请求一次,没有逐条降级
+
+    def test_refusal_during_per_line_retry_raises(self):
+        # 整批输出无法对齐(非拒答)触发逐条重试,逐条中又遇拒答:上抛
+        texts = ["你好", "内容A"]
+
+        def fake_send(system_prompt, user_content):
             if user_content.count("|") >= 2:
-                return "抱歉，我不能协助翻译此类内容。"
-            # 逐条:含露骨关键字的拒答,其余正常
-            num = int(user_content.split("|", 1)[0].strip().splitlines()[-1])
-            if "露骨" in user_content:
+                return "翻译结果没有编号也对不上行数哦"  # 行数不一致 → ValueError
+            if "内容A" in user_content:
                 return "抱歉，我不能协助。"
+            return "1|译1"
+
+        with self.assertRaises(public.TranslationRefused):
+            public._batch_translate("SYS", "{subtitles}", texts, fake_send, wait_time=0)
+
+    def test_unparseable_chunk_still_self_heals_per_line(self):
+        # 纯格式漂移(无拒答)时,逐条失败的条目保留原文,其余正常
+        texts = ["你好", "坏条目", "再见"]
+
+        def fake_send(system_prompt, user_content):
+            if user_content.count("|") >= 2:
+                return "完全对不上的输出"  # 3 条入,1 行出 → ValueError
+            if "坏条目" in user_content:
+                return "第一行\n第二行"  # 单条期望 1 行却返回 2 行 → ValueError
+            num = user_content.split("|", 1)[0].strip().splitlines()[-1]
             return f"{num}|译{num}"
 
         out = public._batch_translate("SYS", "{subtitles}", texts, fake_send, wait_time=0)
         self.assertEqual(out[0], "译1")
-        self.assertEqual(out[1], "露骨内容A")  # 被拒条目保留原文
+        self.assertEqual(out[1], "坏条目")
         self.assertEqual(out[2], "译3")
 
 
