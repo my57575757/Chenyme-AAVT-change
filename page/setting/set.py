@@ -89,6 +89,8 @@ faster_compression_ratio_threshold = whispers["Faster"].get("compression_ratio_t
 faster_vad_threshold = whispers["Faster"].get("vad_threshold", 0.5)
 faster_drop_no_speech_prob = whispers["Faster"].get("drop_no_speech_prob", 0.85)
 faster_dedupe_repeat = whispers["Faster"].get("dedupe_repeat", True)
+faster_zombie_min_seconds = whispers["Faster"].get("zombie_min_seconds", 60.0)
+faster_zombie_max_chars_per_second = whispers["Faster"].get("zombie_max_chars_per_second", 0.2)
 faster_hotwords = whispers["Faster"].get("hotwords", "")
 faster_hallucination_phrases = "\n".join(whispers["Faster"].get("hallucination_phrases", []))
 
@@ -107,6 +109,8 @@ faster_local_compression_ratio_threshold = whispers["Faster_Local"].get("compres
 faster_local_vad_threshold = whispers["Faster_Local"].get("vad_threshold", 0.5)
 faster_local_drop_no_speech_prob = whispers["Faster_Local"].get("drop_no_speech_prob", 0.85)
 faster_local_dedupe_repeat = whispers["Faster_Local"].get("dedupe_repeat", True)
+faster_local_zombie_min_seconds = whispers["Faster_Local"].get("zombie_min_seconds", 60.0)
+faster_local_zombie_max_chars_per_second = whispers["Faster_Local"].get("zombie_max_chars_per_second", 0.2)
 faster_local_hotwords = whispers["Faster_Local"].get("hotwords", "")
 faster_local_hallucination_phrases = "\n".join(whispers["Faster_Local"].get("hallucination_phrases", []))
 
@@ -358,11 +362,13 @@ with tab2:
                     faster_hallucination_silence = st.number_input("静音幻觉阈值 (s，0 关)", min_value=0.0, max_value=10.0, step=0.5, value=float(faster_hallucination_silence))
                     faster_no_speech_threshold = st.number_input("无语音阈值", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_no_speech_threshold))
                     faster_drop_no_speech_prob = st.number_input("事后丢弃 no_speech ≥", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_drop_no_speech_prob), help="1.0 关闭；越高越宽松")
+                    faster_zombie_min_seconds = st.number_input("僵尸段最短时长 (s，0 关)", min_value=0.0, max_value=3600.0, step=10.0, value=float(faster_zombie_min_seconds), help="时长超此值且字密度过低的段直接丢弃，治残句时间轴冻结")
                 with c2:
                     faster_vad_threshold = st.number_input("VAD 灵敏度", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_vad_threshold), disabled=not faster_vad, help="越低越容易判为语音")
                     faster_log_prob_threshold = st.number_input("置信度阈值", min_value=-2.0, max_value=0.0, step=0.1, value=float(faster_log_prob_threshold))
                     faster_compression_ratio_threshold = st.number_input("压缩率阈值", min_value=1.0, max_value=5.0, step=0.1, value=float(faster_compression_ratio_threshold))
                     faster_dedupe_repeat = st.checkbox("去除相邻重复行", value=faster_dedupe_repeat)
+                    faster_zombie_max_chars_per_second = st.number_input("僵尸段最高字密度 (字/s)", min_value=0.0, max_value=2.0, step=0.05, value=float(faster_zombie_max_chars_per_second), help="实测正常台词 ≥0.22 字/s，默认 0.2")
                 faster_hotwords = st.text_input("热词（演员名 / 片名 / 厂商名）", value=faster_hotwords, help="只对专有名词有效，通用词不用填。逗号分隔，如：三上悠亜, 桜空もも, S1, MOODYZ")
                 faster_hallucination_phrases = st.text_area("幻觉黑名单（每行一个，整行命中才丢弃）", value=faster_hallucination_phrases)
 
@@ -391,6 +397,8 @@ with tab2:
                                 whispers["Faster"]["vad_threshold"] = faster_vad_threshold
                                 whispers["Faster"]["drop_no_speech_prob"] = faster_drop_no_speech_prob
                                 whispers["Faster"]["dedupe_repeat"] = faster_dedupe_repeat
+                                whispers["Faster"]["zombie_min_seconds"] = faster_zombie_min_seconds
+                                whispers["Faster"]["zombie_max_chars_per_second"] = faster_zombie_max_chars_per_second
                                 whispers["Faster"]["hotwords"] = faster_hotwords
                                 whispers["Faster"]["hallucination_phrases"] = [line.strip() for line in faster_hallucination_phrases.splitlines() if line.strip()]
                                 toml.dump(whispers, f)
@@ -428,11 +436,13 @@ with tab2:
                     faster_local_hallucination_silence = st.number_input("静音幻觉阈值 (s，0 关)", min_value=0.0, max_value=10.0, step=0.5, value=float(faster_local_hallucination_silence))
                     faster_local_no_speech_threshold = st.number_input("无语音阈值", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_local_no_speech_threshold))
                     faster_local_drop_no_speech_prob = st.number_input("事后丢弃 no_speech ≥", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_local_drop_no_speech_prob), help="1.0 关闭；越高越宽松")
+                    faster_local_zombie_min_seconds = st.number_input("僵尸段最短时长 (s，0 关)", min_value=0.0, max_value=3600.0, step=10.0, value=float(faster_local_zombie_min_seconds), help="时长超此值且字密度过低的段直接丢弃，治残句时间轴冻结")
                 with c2:
                     faster_local_vad_threshold = st.number_input("VAD 灵敏度", min_value=0.0, max_value=1.0, step=0.05, value=float(faster_local_vad_threshold), disabled=not faster_local_vad, help="越低越容易判为语音")
                     faster_local_log_prob_threshold = st.number_input("置信度阈值", min_value=-2.0, max_value=0.0, step=0.1, value=float(faster_local_log_prob_threshold))
                     faster_local_compression_ratio_threshold = st.number_input("压缩率阈值", min_value=1.0, max_value=5.0, step=0.1, value=float(faster_local_compression_ratio_threshold))
                     faster_local_dedupe_repeat = st.checkbox("去除相邻重复行", value=faster_local_dedupe_repeat)
+                    faster_local_zombie_max_chars_per_second = st.number_input("僵尸段最高字密度 (字/s)", min_value=0.0, max_value=2.0, step=0.05, value=float(faster_local_zombie_max_chars_per_second), help="实测正常台词 ≥0.22 字/s，默认 0.2")
                 faster_local_hotwords = st.text_input("热词（演员名 / 片名 / 厂商名）", value=faster_local_hotwords, help="只对专有名词有效，通用词不用填。逗号分隔，如：三上悠亜, 桜空もも, S1, MOODYZ")
                 faster_local_hallucination_phrases = st.text_area("幻觉黑名单（每行一个，整行命中才丢弃）", value=faster_local_hallucination_phrases)
 
@@ -459,6 +469,8 @@ with tab2:
                             whispers["Faster_Local"]["vad_threshold"] = faster_local_vad_threshold
                             whispers["Faster_Local"]["drop_no_speech_prob"] = faster_local_drop_no_speech_prob
                             whispers["Faster_Local"]["dedupe_repeat"] = faster_local_dedupe_repeat
+                            whispers["Faster_Local"]["zombie_min_seconds"] = faster_local_zombie_min_seconds
+                            whispers["Faster_Local"]["zombie_max_chars_per_second"] = faster_local_zombie_max_chars_per_second
                             whispers["Faster_Local"]["hotwords"] = faster_local_hotwords
                             whispers["Faster_Local"]["hallucination_phrases"] = [line.strip() for line in faster_local_hallucination_phrases.splitlines() if line.strip()]
                             whispers["Video_Local"]["path"] = video_local_path

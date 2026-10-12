@@ -197,10 +197,12 @@ FASTER_ADVANCED_DEFAULTS = {
     "vad_threshold": 0.5,
     "drop_no_speech_prob": 0.85,        # 事后过滤:1.0 关闭
     "dedupe_repeat": True,              # 事后过滤:去掉相邻重复行
+    "zombie_min_seconds": 60.0,         # 事后过滤:段时长超此值且字密度过低则丢弃(VAD 残句时间轴冻结),0 关闭
+    "zombie_max_chars_per_second": 0.2,
     "hotwords": "",
     "hallucination_phrases": [
         # 日语 YouTube 片尾/频道套话类幻觉(社区实测高频,正片不可能出现)
-        "ありがとうございました",
+        # 注意:裸「ありがとうございました」不能拉黑——剧情真实道谢会误杀,只封杀与片尾词的组合
         "ご視聴ありがとうございました",
         "ご視聴ありがとうございます",
         "最後までご視聴ありがとうございました",
@@ -251,6 +253,7 @@ def _is_phantom_text(text: str, phrases) -> bool:
 def _filter_hallucinated_segments(segments: list, settings: dict) -> list:
     kept = []
     dropped = 0
+    zombie_dropped = 0
     prev_norm = None
     for seg in segments:
         text = seg.text.strip()
@@ -260,6 +263,12 @@ def _filter_hallucinated_segments(segments: list, settings: dict) -> list:
         if _is_phantom_text(text, settings["hallucination_phrases"]):
             dropped += 1
             continue
+        duration = seg.end - seg.start
+        if (settings["zombie_min_seconds"] > 0 and duration > settings["zombie_min_seconds"]
+                and len(text) / duration < settings["zombie_max_chars_per_second"]):
+            dropped += 1
+            zombie_dropped += 1
+            continue
         norm = re.sub(r"\s+", "", text)
         if settings["dedupe_repeat"] and norm and norm == prev_norm:
             dropped += 1
@@ -267,7 +276,8 @@ def _filter_hallucinated_segments(segments: list, settings: dict) -> list:
         prev_norm = norm
         kept.append(seg)
     if dropped:
-        print(f"\033[1;33m⚠️ 幻觉过滤: 丢弃 {dropped} 个可疑片段\033[0m")
+        tail = f",其中僵尸段 {zombie_dropped} 个" if zombie_dropped else ""
+        print(f"\033[1;33m⚠️ 幻觉过滤: 丢弃 {dropped} 个可疑片段{tail}\033[0m")
     return kept
 
 
