@@ -9,9 +9,12 @@ from openai import OpenAI
 from pydantic import BaseModel
 import streamlit_antd_components as sac
 from styles.global_style import style
-from utils.public import (FileToMp3, OpenaiWhisperResult, runWhisperSeperateProc, translate, local_translate, encode_image,
+from tqdm import tqdm
+from utils.public import (FileToMp3, OpenaiWhisperResult, runWhisperSeperateProc, translate, local_translate,
+                          encode_image,
                           generate_srt_from_result, generate_srt_from_result_2, srt_mv, parse_srt_file, convert_to_srt,
-                          show_video, add_font_settings, srt_to_ass, srt_to_vtt, srt_to_sbv, extract_frames, write_llms)
+                          show_video, add_font_settings, srt_to_ass, srt_to_vtt, srt_to_sbv, extract_frames, write_llms,
+                          findVideos, read_srt_file, translate_srt, local_translate_srt, get_duration_from_moviepy,get_file_size)
 
 style()
 
@@ -97,6 +100,7 @@ faster_local_temp = whispers["Faster_Local"]["Temp"]  # 温度
 faster_local_prompt = whispers["Faster_Local"]["Prompt"]  # 提示词
 faster_local_min_vad = whispers["Faster_Local"]["min_vad"]  # 最小 VAD 持续时间
 faster_local_beam_size = whispers["Faster_Local"]["beam_size"]  # Beam Size
+video_local_path = whispers["Video_Local"]["path"]  # 视频路径
 
 language = video_config["whisper"]["language_list"]
 openai_whisper_model_list = video_config["whisper"]["openai_whisper_model_list"]
@@ -151,7 +155,7 @@ translation_dict = {
     (12, 14): 'gemini-1.0-pro',
     (12, 15): 'gemini-1.5-flash',
     (12, 16): 'gemini-1.5-pro',
-    (17, 18): 'deepseek-chat',
+    (17, 18): 'deepseek-flash',
     (17, 19): 'deepseek-coder',
     (20, 21): 'moonshot-v1-8k',
     (20, 22): 'moonshot-v1-32k',
@@ -276,7 +280,7 @@ with tab4:
                 sac.CasItem('gemini-1.5-flash', icon='folder2-open'),
                 sac.CasItem('gemini-1.5-pro', icon='folder2-open')]),
             sac.CasItem('深度求索 / DeepSeek', icon='folder2', children=[
-                sac.CasItem('deepseek-chat', icon='folder2-open'),
+                sac.CasItem('deepseek-flash', icon='folder2-open'),
                 sac.CasItem('deepseek-coder', icon='folder2-open')]),
             sac.CasItem('月之暗面 / Kimi', icon='folder2', children=[
                 sac.CasItem('kimi-moonshot-v1-8k', icon='folder2-open'),
@@ -383,7 +387,7 @@ with tab4:
                 sac.CasItem('gemini-1.5-flash', icon='folder2-open'),
                 sac.CasItem('gemini-1.5-pro', icon='folder2-open')]),
             sac.CasItem('深度求索 / DeepSeek', icon='folder2', children=[
-                sac.CasItem('deepseek-chat', icon='folder2-open'),
+                sac.CasItem('deepseek-flash', icon='folder2-open'),
                 sac.CasItem('deepseek-coder', icon='folder2-open')]),
             sac.CasItem('月之暗面 / Kimi', icon='folder2', children=[
                 sac.CasItem('kimi-moonshot-v1-8k', icon='folder2-open'),
@@ -486,8 +490,155 @@ with tab1:
     with col2:
         st.write("")
         allow = st.checkbox("**本次不合并视频**", help="勾选后，本次识别过程中仅识别并翻译(如果有)视频字幕，不主动合并字幕。")
+        srtOldCon = ""
+        isLocalSrt = False
         if st.button("**开始识别**", type="primary", use_container_width=True):
-            if "uploaded_file_video" in st.session_state:
+            print("视频文件目录:"+video_local_path)
+            if len(video_local_path)>0:
+                for filePath in tqdm(findVideos(video_local_path), desc="正在生成字幕"):
+                    print("\n" + "=" * 50)
+                    print("\n\033[1;39m*** Chenyme-AAVT AI音频识别 ***\033[0m")
+                    st.toast('任务开始执行！请勿在运行时切换菜单或修改参数!', icon=":material/rocket_launch:")
+                    msg_ved = st.toast('正在对视频进行预处理', icon=":material/movie:")
+                    st.session_state.video_name_original = os.path.splitext(filePath)[0]
+                    st.session_state.srt_name = filePath
+                    srtZhName = f"{st.session_state.video_name_original}.srt"
+                    srtOldName = f"{st.session_state.video_name_original}-old.srt"
+                    erroFile = f"{st.session_state.video_name_original}_erro.txt"
+                    # 判断存在错误文件跳过
+                    if os.path.exists(erroFile):
+                        print('存在错误文件')
+                        continue
+                    # 判断中文字幕文件是否存在存在跳过
+                    if os.path.exists(srtZhName) or st.session_state.video_name_original.endswith("-c") or st.session_state.video_name_original.endswith("-C"):
+                        print('翻译字幕已存在')
+                        continue
+                    output_file = os.path.dirname(filePath)
+                    print("\n\033[1;34m🚀 任务开始执行\033[0m")
+                    print(f"\033[1;34m📂 本次任务目录:\033[0m\033[1;34m {st.session_state.srt_name} \033[0m")
+                    print("\033[1;33m⚠️ 请不要在任务运行期间切换菜单或修改参数！\033[0m")
+                    msg_ved.toast("视频预处理完成", icon=":material/movie:")
+                    # 判断视频大小小于100m不生成字幕
+                    size = get_file_size(filePath)
+                    if size<104857600:
+                        print('视频小于100m')
+                        continue
+                    # 判断视频时长是否大于5分钟,小于则不生成字幕
+                    time = get_duration_from_moviepy(filePath)
+                    if time<300:
+                        print('时长不足5分钟')
+                        continue
+                    FileToMp3(log_setting, filePath, output_file)
+                    msg_whs = st.toast("正在识别视频内容", icon=":material/troubleshoot:")
+                    # 判断是否有原语言文件
+                    if os.path.exists(srtOldName):
+                        srtOldCon = read_srt_file(srtOldName)
+                        isLocalSrt = True
+                    else:
+                        if whisper_mode == "OpenAIWhisper - API":
+                            result = OpenaiWhisperResult(chatgpt_key, chatgpt_url, output_file, openai_whisper_model_index,
+                                                         whisper_prompt, whisper_temp)
+                        if whisper_mode == "FasterWhisper - AutoDownload":
+                            result = runWhisperSeperateProc(output_file, faster_gpu, faster_whisper_model_index,
+                                                            faster_prompt, faster_temp, faster_vad, language_index,
+                                                            faster_beam_size, faster_min_vad, st.session_state.video_name_original)
+                        if whisper_mode == "FasterWhisper - LocalModel":
+                            result = runWhisperSeperateProc(output_file, faster_local_gpu, faster_whisper_model_local_index,
+                                                            faster_local_prompt, faster_local_temp, faster_local_vad,
+                                                            language_index, faster_local_beam_size, faster_local_min_vad, st.session_state.video_name_original)
+                        if 'error' in result:
+                            # 删除mp3
+                            if os.path.exists(output_file + "/output.mp3"):
+                                os.remove(output_file + "/output.mp3")
+                            print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
+                            # st.error(f"处理失败，错误信息：{result['error']}")
+                            # st.stop()
+                            continue
+                        print("\033[1;34m🎉 Whisper 识别成功！\033[0m")
+                        # 保存原语言文件
+                        with open(srtOldName, 'w', encoding='utf-8') as srt_old_file:
+                            old_content = generate_srt_from_result(result)
+                            srt_old_file.write(old_content)
+                        msg_whs.toast("视频内容识别完成", icon=":material/colorize:")
+
+                    translate_option = translation_dict[tuple(video_translate_index)]
+
+                    if isLocalSrt:
+                        srt_content = read_srt_file(srtOldName)
+                        msg_tra = st.toast("正在翻译字幕", icon=":material/translate:")
+                        if '本地模型' in translate_option:
+                            result = local_translate_srt(system_prompt, user_prompt, local_key, local_url, local_model,
+                                                         srt_content, srt_setting)
+                        elif 'gemini' in translate_option:
+                            result = translate_srt(system_prompt, user_prompt, gemini_key, gemini_url, translate_option,
+                                                   srt_content, video_wait_time_setting, srt_setting)
+                        elif 'yi' in translate_option:
+                            result = translate_srt(system_prompt, user_prompt, ai01_key, ai01_url, translate_option,
+                                                   srt_content, video_wait_time_setting, srt_setting)
+                        elif 'gpt' in translate_option:
+                            result = translate_srt(system_prompt, user_prompt, chatgpt_key, chatgpt_url,
+                                                   translate_option, srt_content, video_wait_time_setting, srt_setting)
+                        elif 'moonshot' in translate_option:
+                            result = translate_srt(system_prompt, user_prompt, kimi_key, kimi_base, translate_option,
+                                                   srt_content, video_wait_time_setting, srt_setting)
+                        elif 'glm' in translate_option:
+                            result = translate_srt(system_prompt, user_prompt, chatglm_key, chatglm_url,
+                                                   translate_option, srt_content, video_wait_time_setting, srt_setting)
+                        elif 'deepseek' in translate_option:
+                            result = translate_srt(system_prompt, user_prompt, deepseek_key, deepseek_url,
+                                                   translate_option, srt_content, video_wait_time_setting, srt_setting)
+                        elif 'claude' in translate_option:
+                            result = translate_srt(system_prompt, user_prompt, claude_key, chatglm_url,
+                                                   translate_option, srt_content, video_wait_time_setting, srt_setting)
+                        print("\033[1;34m🎉 字幕翻译已完成！\033[0m")
+                        srt_content = ""
+                        for i, subtitle in enumerate(result, start=1):
+                            print(f"{subtitle}\n")
+                            srt_content += f"{i}\n"
+                            srt_content += f"{subtitle['time']}\n"
+                            srt_content += subtitle['text'].replace('\n', '\n') + "\n\n"
+                    else:
+                        if translate_option != '无需翻译':
+                            msg_tra = st.toast("正在翻译字幕", icon=":material/translate:")
+                            if '本地模型' in translate_option:
+                                result = local_translate(system_prompt, user_prompt, local_key, local_url, local_model,
+                                                         result, srt_setting)
+                            elif 'gemini' in translate_option:
+                                result = translate(system_prompt, user_prompt, gemini_key, gemini_url, translate_option,
+                                                   result, video_wait_time_setting, srt_setting)
+                            elif 'yi' in translate_option:
+                                result = translate(system_prompt, user_prompt, ai01_key, ai01_url, translate_option, result,
+                                                   video_wait_time_setting, srt_setting)
+                            elif 'gpt' in translate_option:
+                                result = translate(system_prompt, user_prompt, chatgpt_key, chatgpt_url, translate_option,
+                                                   result, video_wait_time_setting, srt_setting)
+                            elif 'moonshot' in translate_option:
+                                result = translate(system_prompt, user_prompt, kimi_key, kimi_base, translate_option,
+                                                   result, video_wait_time_setting, srt_setting)
+                            elif 'glm' in translate_option:
+                                result = translate(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option,
+                                                   result, video_wait_time_setting, srt_setting)
+                            elif 'deepseek' in translate_option:
+                                result = translate(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option,
+                                                   result, video_wait_time_setting, srt_setting)
+                            elif 'claude' in translate_option:
+                                result = translate(system_prompt, user_prompt, claude_key, claude_url, translate_option,
+                                                   result, video_wait_time_setting, srt_setting)
+                            print("\033[1;34m🎉 字幕翻译已完成！\033[0m")
+                            msg_tra.toast("翻译任务结束！", icon=":material/translate:")
+
+                        msg_srt = st.toast('正在生成SRT字幕文件', icon=":material/edit_note:")
+                        print("\n\033[1;35m*** 正在生成 SRT 字幕文件 ***\033[0m\n")
+                        srt_content = generate_srt_from_result(result)
+
+                    with open(srtZhName, 'w', encoding='utf-8') as srt_file:
+                        srt_file.write(srt_content)
+                    st.session_state.output_file = output_file
+                    # 删除mp3
+                    os.remove(output_file+"/output.mp3")
+                    print("\033[1;34m🎉 任务成功结束！\033[0m")
+                    print("\n" + "=" * 50 + "\n")
+            elif "uploaded_file_video" in st.session_state:
                 uploaded_file_video = st.session_state.uploaded_file_video
                 print("\n" + "=" * 50)
                 print("\n\033[1;39m*** Chenyme-AAVT AI音频识别 ***\033[0m")
@@ -512,9 +663,9 @@ with tab1:
                 if whisper_mode == "OpenAIWhisper - API":
                     result = OpenaiWhisperResult(chatgpt_key, chatgpt_url, output_file, openai_whisper_model_index, whisper_prompt, whisper_temp)
                 if whisper_mode == "FasterWhisper - AutoDownload":
-                    result = runWhisperSeperateProc(output_file, faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size, faster_min_vad)
+                    result = runWhisperSeperateProc(output_file, faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size, faster_min_vad, st.session_state.video_name_original)
                 if whisper_mode == "FasterWhisper - LocalModel":
-                    result = runWhisperSeperateProc(output_file, faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad)
+                    result = runWhisperSeperateProc(output_file, faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad, st.session_state.video_name_original)
                 if 'error' in result:
                     print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
                     st.error(f"处理失败，错误信息：{result['error']}")

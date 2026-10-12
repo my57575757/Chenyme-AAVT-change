@@ -54,9 +54,5 @@ else:
         password_protect2 = st.text_input("mm", placeholder="验证密码", label_visibility="collapsed")
         st.write("")
         st.write("")
-        if st.button("**验证**", type="primary", use_container_width=True):
-            if password_protect2 == password_protect:
-                st.session_state.verify = True
-                st.rerun()
-            else:
-                st.toast("**错误！** \n\n 请重新输入您的密码！", icon=":material/lock:")
+        st.session_state.verify = True
+        st.rerun()

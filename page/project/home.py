@@ -45,7 +45,7 @@ parameter_mapping = {
     (10, 13): 'gemini-1.5-flash',
     (10, 14): 'gemini-1.5-pro',
 
-    (15, 16): 'deepseek-chat',
+    (15, 16): 'deepseek-flash',
     (15, 17): 'deepseek-coder',
 
     (18, 19): 'kimi-moonshot-v1-8k',

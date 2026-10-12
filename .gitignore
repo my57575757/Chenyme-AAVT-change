@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv12/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# 模型权重 / FFmpeg / 临时下载
+model/
+models/
+ffmpeg-master-latest-win64-gpl/
+.pip-test-aliyun/
+
+# 运行产物
+.tmp/
+output*.mp3
+output*.mp4
+*.log

@@ -131,7 +131,7 @@ translation_dict = {
     (12, 14): 'gemini-1.0-pro',
     (12, 15): 'gemini-1.5-flash',
     (12, 16): 'gemini-1.5-pro',
-    (17, 18): 'deepseek-chat',
+    (17, 18): 'deepseek-flash',
     (17, 19): 'deepseek-coder',
     (20, 21): 'moonshot-v1-8k',
     (20, 22): 'moonshot-v1-32k',
@@ -255,7 +255,7 @@ with tab2:
                 sac.CasItem('gemini-1.5-flash', icon='folder2-open'),
                 sac.CasItem('gemini-1.5-pro', icon='folder2-open')]),
             sac.CasItem('深度求索 / DeepSeek', icon='folder2', children=[
-                sac.CasItem('deepseek-chat', icon='folder2-open'),
+                sac.CasItem('deepseek-flash', icon='folder2-open'),
                 sac.CasItem('deepseek-coder', icon='folder2-open')]),
             sac.CasItem('月之暗面 / Kimi', icon='folder2', children=[
                 sac.CasItem('kimi-moonshot-v1-8k', icon='folder2-open'),
@@ -382,9 +382,9 @@ with tab1:
                 if whisper_mode == "OpenAIWhisper - API":
                     result = OpenaiWhisperResult(chatgpt_key, chatgpt_url, f"{output_file}/{st.session_state.audio_name}", openai_whisper_model_index, whisper_prompt, whisper_temp)
                 if whisper_mode == "FasterWhisper - AutoDownload":
-                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size, faster_min_vad)
+                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size,st.session_state.audio_name, faster_min_vad)
                 if whisper_mode == "FasterWhisper - LocalModel":
-                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad)
+                    result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size,st.session_state.audio_name, faster_local_min_vad)
                 if 'error' in result:
                     print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
                     st.error(f"处理失败，错误信息：{result['error']}")

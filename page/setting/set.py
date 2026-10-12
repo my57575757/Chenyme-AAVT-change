@@ -84,6 +84,7 @@ faster_local_temp = whispers["Faster_Local"]["Temp"]  # 温度
 faster_local_prompt = whispers["Faster_Local"]["Prompt"]  # 提示词
 faster_local_min_vad = whispers["Faster_Local"]["min_vad"]  # 最小 VAD 持续时间
 faster_local_beam_size = whispers["Faster_Local"]["beam_size"]  # Beam Size
+video_local_path = whispers["Video_Local"]["path"]  # 视频路径
 
 log_setting = project["ffmpeg"]["log"]
 crf_setting = project["ffmpeg"]["crf"]
@@ -170,7 +171,7 @@ with tab1:
                 sac.CasItem('gemini-1.5-flash', icon='folder2-open'),
                 sac.CasItem('gemini-1.5-pro', icon='folder2-open')]),
             sac.CasItem('深度求索 / DeepSeek', icon='folder2', children=[
-                sac.CasItem('deepseek-chat', icon='folder2-open'),
+                sac.CasItem('deepseek-flash', icon='folder2-open'),
                 sac.CasItem('deepseek-coder', icon='folder2-open')]),
             sac.CasItem('月之暗面 / Kimi', icon='folder2', children=[
                 sac.CasItem('kimi-moonshot-v1-8k', icon='folder2-open'),
@@ -348,6 +349,7 @@ with tab2:
                 faster_local_beam_size = st.number_input("束搜索大小", min_value=1, max_value=10, step=1, value=faster_local_beam_size)
             faster_local_prompt = st.text_input("提示词", value=faster_local_prompt)
             faster_local_path = st.text_input("模型路径", value=faster_local_path)
+            video_local_path = st.text_input("视频路径", value=video_local_path)
             st.write("")
 
             with WhisperSave:
@@ -365,6 +367,7 @@ with tab2:
                             whispers["Faster_Local"]["Prompt"] = faster_local_prompt
                             whispers["Faster_Local"]["min_vad"] = faster_local_min_vad
                             whispers["Faster_Local"]["beam_size"] = faster_local_beam_size
+                            whispers["Video_Local"]["path"] = video_local_path
                             toml.dump(whispers, f)
                         st.session_state.save = True
                         st.rerun()
@@ -505,7 +508,7 @@ with tab3:
                         try:
                             client = OpenAI(api_key=key, base_url=url)
                             response = client.chat.completions.create(
-                                model="deepseek-chat",
+                                model="deepseek-flash",
                                 messages=[{"role": "user", "content": "测试"}])
                             answer = response.choices[0].message.content
                             st.success("**测试成功！**", icon=":material/check:")

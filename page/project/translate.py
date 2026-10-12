@@ -87,7 +87,7 @@ translation_dict = {
     (12, 14): 'gemini-1.0-pro',
     (12, 15): 'gemini-1.5-flash',
     (12, 16): 'gemini-1.5-pro',
-    (17, 18): 'deepseek-chat',
+    (17, 18): 'deepseek-flash',
     (17, 19): 'deepseek-coder',
     (20, 21): 'moonshot-v1-8k',
     (20, 22): 'moonshot-v1-32k',
@@ -173,7 +173,7 @@ with tab2:
                 sac.CasItem('gemini-1.5-flash', icon='folder2-open'),
                 sac.CasItem('gemini-1.5-pro', icon='folder2-open')]),
             sac.CasItem('深度求索 / DeepSeek', icon='folder2', children=[
-                sac.CasItem('deepseek-chat', icon='folder2-open'),
+                sac.CasItem('deepseek-flash', icon='folder2-open'),
                 sac.CasItem('deepseek-coder', icon='folder2-open')]),
             sac.CasItem('月之暗面 / Kimi', icon='folder2', children=[
                 sac.CasItem('kimi-moonshot-v1-8k', icon='folder2-open'),

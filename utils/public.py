@@ -1,5 +1,6 @@
 import time
 import json
+import sysconfig
 import subprocess
 import requests
 from pathlib import Path
@@ -13,10 +14,46 @@ import google.generativeai as genai
 import re
 import cv2
 import os
+import shutil
 import toml
 import torch
 import base64
 import streamlit as st
+from typing import List
+from multiprocessing import Process, Manager
+import pysrt
+import datetime
+from moviepy.editor import *
+
+
+def _ensure_ffmpeg_on_path():
+    # winget 新装的 ffmpeg 在 WinGet\Links,启动器进程未重启时继承的旧 PATH 找不到它
+    if shutil.which("ffmpeg"):
+        return
+    winget_links = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links")
+    if os.path.isfile(os.path.join(winget_links, "ffmpeg.exe")):
+        os.environ["PATH"] = winget_links + os.pathsep + os.environ.get("PATH", "")
+
+
+_ensure_ffmpeg_on_path()
+
+
+def _register_nvidia_dlls():
+    # ctranslate2 在模型加载时才按需 LoadLibrary cuBLAS/cuDNN;pip 安装的运行库位于
+    # site-packages/nvidia/*/bin,不在系统 PATH,需显式注册 DLL 目录
+    if sys.platform != "win32":
+        return
+    nvidia_root = os.path.join(sysconfig.get_paths().get("purelib", ""), "nvidia")
+    if not os.path.isdir(nvidia_root):
+        return
+    for bin_dir in Path(nvidia_root).glob("*/bin"):
+        if any(bin_dir.glob("*.dll")):
+            os.add_dll_directory(str(bin_dir))
+            # ctranslate2 内部以传统搜索方式 LoadLibrary cuBLAS,add_dll_directory 对它无效,必须进 PATH
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+
+
+_register_nvidia_dlls()
 
 
 def get_global_info():
@@ -30,6 +67,25 @@ def get_global_info():
     return global_key, global_url, all_in_one
 
 
+EXCLUDED_VIDEO_DIRS = {"云盘缓存文件"}
+
+
+def findVideos(directory: str) -> List:
+    videos = []
+    fileExt = ['m4a', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm', 'mkv', 'avi']
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_VIDEO_DIRS]
+        for file in files:
+            if file.split('.')[-1] in fileExt:
+                videos.append(os.path.join(root, file))
+    print(f"找到{len(videos)}个视频文件")
+    return videos
+
+def get_file_size(file_path):
+    size = os.path.getsize(file_path)
+    return size
+
+
 def FileToMp3(log_level: str, input_dir: str, output_dir: str, output_name: str = "output.mp3"):
     input_path = Path(input_dir)
     output_path = Path(output_dir) / output_name
@@ -40,7 +96,9 @@ def FileToMp3(log_level: str, input_dir: str, output_dir: str, output_name: str 
     if input_path.suffix.lower() == ".mp3":
         print("\033[1;34m🎧 文件已经是 MP3 格式，无需转换。\033[0m")
         return output_path
-
+    if os.path.exists(output_path):
+        print("\033[1;34m🎧 文件已存在，无需转换。\033[0m")
+        return output_path
     try:
         command = [
             "ffmpeg", "-loglevel", log_level, "-i", str(input_path),
@@ -52,7 +110,8 @@ def FileToMp3(log_level: str, input_dir: str, output_dir: str, output_name: str 
         return output_path
 
     except subprocess.CalledProcessError as e:
-        raise EOFError(f"FFmpeg 执行失败: {e}")
+        print(f"FFmpeg 执行失败: {e}")
+        # raise EOFError(f"FFmpeg 执行失败: {e}")
     except Exception as e:
         raise EOFError(f"发生错误！可能是 FFmpeg 未被正确配置或上传文件格式不受支持。详细信息: {e}")
 
@@ -102,9 +161,10 @@ def OpenaiWhisperResult(key: str, url: str, path: str, model: str, prompt: str, 
     return result
 
 
-def FasterWhisperResultDict(segments):
+def FasterWhisperResultDict(segments, info):
     segments = list(segments)
     return {
+        'lang': info.language,
         'text': ' '.join([segment.text for segment in segments]),
         'segments': [{
             'id': segment.id,
@@ -122,8 +182,11 @@ def FasterWhisperResultDict(segments):
     }
 
 
-def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: str, temp: float, vad: bool, lang: str, beam_size: int, min_vad: int):
-    valid_models = ['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v1', 'large-v2', 'large-v3', 'large', 'distil-small.en', 'distil-medium.en', 'distil-large-v2', 'distil-large-v3']
+def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: str, temp: float, vad: bool, lang: str,
+                        beam_size: int, min_vad: int,fileName: str, returnList):
+    valid_models = ['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large-v1',
+                    'large-v2', 'large-v3', 'large', 'distil-small.en', 'distil-medium.en', 'distil-large-v2',
+                    'distil-large-v3']
     if device:
         device = "cuda"
     else:
@@ -137,7 +200,6 @@ def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: st
     print(f"\033[1;34m🖥️ 运行模型: {model_name} \033[0m")
     print(f"\033[1;34m⚙️️ 运行方式: {device} \033[0m")
     print(f"\033[1;34m🎙️ VAD辅助: {vad} \033[0m")
-
     file_path = Path(file_path)
     try:
         if file_path.is_file():
@@ -145,6 +207,7 @@ def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: st
         else:
             audio_file = (file_path / "output.mp3").open("rb")
     except FileNotFoundError as e:
+        returnList[0] = {"error": f"文件错误：{str(e)}"}
         return {"error": f"文件错误：{str(e)}"}
 
     try:
@@ -163,25 +226,216 @@ def FasterWhisperResult(file_path: str, device: str, model_name: str, prompt: st
             if lang != "自动识别":
                 transcribe_args["language"] = lang
 
-            segments, _ = model.transcribe(audio_file, **transcribe_args)
+            segments, info = model.transcribe(audio_file, **transcribe_args)
 
-        result = FasterWhisperResultDict(segments)
+        result = FasterWhisperResultDict(segments, info)
         print(f"\033[1;34m📝 Whisper识别结果:\033[0m\n{result['text']}")
+        returnList[0] = result
         return result
 
     except Exception as e:
+        # 生成错误文件,防止再次扫描
+        if fileName!=None:
+            fileName = os.path.splitext(fileName)[0]
+            erroFile = f"{fileName}_erro.txt"
+            with open(erroFile, 'w', encoding='utf-8') as error_file:
+                error_file.write(str(e))
+        print(f"转录过程发生错误：{str(e)}")
+        returnList[0] = {"error": f"转录过程发生错误：{str(e)}"}
         return {"error": f"转录过程发生错误：{str(e)}"}
 
 
 def runWhisperSeperateProc(*args):
     try:
-        with ThreadPoolExecutor() as executor:
-            future = executor.submit(FasterWhisperResult, *args)
-            return future.result()
-
+        # with ThreadPoolExecutor() as executor:
+        #     future = executor.submit(FasterWhisperResult, *args)
+        #     return future.result()
+        with Manager() as manager:
+            returnList = manager.list([None])
+            p = Process(target=FasterWhisperResult, args=args + (returnList,))
+            p.start()
+            p.join()
+            p.close()
+            return returnList[0]
     except Exception as e:
+        print(f"An error occurred during transcription: {e}")
         st.error(f"An error occurred during transcription: {e}")
         st.stop()
+
+
+
+BATCH_MAX_LINES = 150
+BATCH_MAX_CHARS = 6000
+_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\s*[|｜]\s*(.*)$")
+
+
+def _chunk_translation_items(texts, max_lines=BATCH_MAX_LINES, max_chars=BATCH_MAX_CHARS):
+    chunk = []
+    char_count = 0
+    for index, text in enumerate(texts):
+        text = str(text)
+        if chunk and (len(chunk) >= max_lines or char_count + len(text) > max_chars):
+            yield chunk
+            chunk = []
+            char_count = 0
+        chunk.append((index, text))
+        char_count += len(text)
+    if chunk:
+        yield chunk
+
+
+def _build_numbered_block(items):
+    lines = []
+    for index, text in items:
+        flat = str(text).replace("\r", " ").replace("\n", " ").replace("|", "丨")
+        lines.append(f"{index + 1}|{flat}")
+    return "\n".join(lines)
+
+
+def _parse_numbered_translations(content, expected_numbers):
+    numbered = {}
+    for line in str(content).splitlines():
+        match = _NUMBERED_LINE_RE.match(line)
+        if match:
+            number = int(match.group(1))
+            if number not in numbered:
+                numbered[number] = match.group(2).strip()
+    expected = list(expected_numbers)
+    if all(number in numbered for number in expected):
+        return {number: numbered[number] for number in expected}
+
+    plain_lines = [line.strip() for line in str(content).splitlines() if line.strip()]
+    if len(plain_lines) == len(expected):
+        aligned = {}
+        for number, line in zip(expected, plain_lines):
+            match = _NUMBERED_LINE_RE.match(line)
+            aligned[number] = match.group(2).strip() if match else line
+        return aligned
+
+    missing = [number for number in expected if number not in numbered][:20]
+    raise ValueError(
+        f"批量翻译结果无法与原文对齐:期望 {len(expected)} 条,按编号解析出 {len(numbered)} 条,"
+        f"缺失编号示例 {missing}。请检查模型输出格式或调小批量分块大小。"
+    )
+
+
+def _build_batch_user_prompt(user_prompt, block):
+    template = user_prompt.replace("{combined_text}", "")
+    if "{subtitles}" in template:
+        return template.replace("{subtitles}", block)
+    return template.rstrip() + "\n\n" + block
+
+
+def _batch_translate(system_prompt, user_prompt, texts, send, wait_time=0,
+                     max_lines=BATCH_MAX_LINES, max_chars=BATCH_MAX_CHARS):
+    translations = [None] * len(texts)
+    chunks = list(_chunk_translation_items(texts, max_lines, max_chars))
+    total = len(chunks)
+    for chunk_index, items in enumerate(chunks):
+        block = _build_numbered_block(items)
+        user_content = _build_batch_user_prompt(user_prompt, block)
+        content = send(system_prompt, user_content)
+        parsed = _parse_numbered_translations(content, [index + 1 for index, _ in items])
+        for index, _ in items:
+            translations[index] = parsed[index + 1]
+        print(f"\033[1;34m📦 批量翻译进度: {chunk_index + 1}/{total} 块(本块 {len(items)} 条)\033[0m")
+        if wait_time and chunk_index < total - 1:
+            time.sleep(wait_time)
+    return translations
+
+
+def _compose_bilingual(original, translated, srt):
+    if srt == "原始语言为首":
+        return f"{original}\n{translated}"
+    if srt == "目标语言为首":
+        return f"{translated}\n{original}"
+    return translated
+
+
+def _provider_batch_translate(system_prompt, user_prompt, texts, api_key, base_url, model,
+                              wait_time, all_in_one, global_key, global_url):
+    print("\033[1;34m📝 翻译内容: \033[0m")
+
+    if all_in_one:
+        print(f"\033[1;34m🌐 代理地址: {global_url}\033[0m")
+        client = OpenAI(api_key=global_key, base_url=global_url)
+
+        def send(system, user_content):
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user_content}])
+            return response.choices[0].message.content
+
+        return _batch_translate(system_prompt, user_prompt, texts, send, wait_time)
+
+    if "gpt" in model:
+        if base_url != "https://api.openai.com/v1":
+            print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
+        client = OpenAI(api_key=api_key, base_url=base_url)
+
+        def send(system, user_content):
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user_content}])
+            return response.choices[0].message.content
+
+        return _batch_translate(system_prompt, user_prompt, texts, send, wait_time)
+
+    if "claude" in model:
+        if base_url != "https://api.anthropic.com/v1/messages":
+            print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
+        client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+
+        def send(system, user_content):
+            message = client.messages.create(
+                model=model,
+                max_tokens=8192,
+                system=system,
+                messages=[{"role": "user", "content": user_content}])
+            return message.content[0]["text"]
+
+        return _batch_translate(system_prompt, user_prompt, texts, send, wait_time)
+
+    if "gemini" in model:
+        if base_url is None:
+            genai.configure(api_key=api_key)
+            gemini_model = genai.GenerativeModel(model)
+
+            def send(system, user_content):
+                return gemini_model.generate_content(system + user_content).text
+
+            return _batch_translate(system_prompt, user_prompt, texts, send, wait_time)
+
+        print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
+
+        def send(system, user_content):
+            payload = json.dumps({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_content}
+                ],
+                "temperature": 0.8
+            })
+            headers = {"Content-Type": "application/json", "Authorization": api_key}
+            response = requests.request("POST", base_url, headers=headers, data=payload)
+            return response.json()["choices"][0]["message"]["content"]
+
+        return _batch_translate(system_prompt, user_prompt, texts, send, wait_time)
+
+    print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def send(system, user_content):
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user_content}])
+        return response.choices[0].message.content
+
+    return _batch_translate(system_prompt, user_prompt, texts, send, wait_time)
 
 
 def translate(system_prompt, user_prompt, api_key, base_url, model, result, wait_time, srt):
@@ -189,278 +443,20 @@ def translate(system_prompt, user_prompt, api_key, base_url, model, result, wait
     print(f"\033[1;34m🈴 翻译模型: {model}\033[0m")
     global_key, global_url, all_in_one = get_global_info()
 
-    if all_in_one:
-        client = OpenAI(api_key=global_key, base_url=global_url)
-        print(f"\033[1;34m🌐 代理地址: {global_url}\033[0m")
-        print(f"\033[1;34m📝 翻译内容: \033[0m")
+    segments = result['segments']
+    texts = [str(segment['text']) for segment in segments]
 
-        segment_id = 0
-        segments = result['segments']
-
-        context_size = 2
-        previous_texts = []
-        original_user_prompt = user_prompt
-
-        for segment in segments:
-            text = segment['text']
-
-            if len(previous_texts) > 0:
-                combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-            else:
-                combined_text = text
-            current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": current_user_prompt + str(text)}
-                ])
-            answer = response.choices[0].message.content
-
-            if srt == "原始语言为首":
-                result['segments'][segment_id]['text'] = str(text) + "\n" + str(answer)
-            elif srt == "目标语言为首":
-                result['segments'][segment_id]['text'] = str(answer) + "\n" + str(text)
-            else:
-                result['segments'][segment_id]['text'] = answer
-            segment_id += 1
+    if result.get('lang') == 'zh':
+        translations = list(texts)
+    else:
+        translations = _provider_batch_translate(
+            system_prompt, user_prompt, texts, api_key, base_url, model,
+            wait_time, all_in_one, global_key, global_url)
+        for answer in translations:
             print(answer)
 
-            previous_texts.append(text)
-            if len(previous_texts) > context_size:
-                previous_texts.pop(0)
-            time.sleep(wait_time)
-
-    else:
-        if "gpt" in model:
-            if base_url != "https://api.openai.com/v1":
-                print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-            print(f"\033[1;34m📝 翻译内容: \033[0m")
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            segment_id = 0
-            segments = result['segments']
-            original_user_prompt = user_prompt
-            context_size = 2
-            previous_texts = []
-            for segment in segments:
-                text = segment['text']
-
-                if len(previous_texts) > 0:
-                    combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                else:
-                    combined_text = text
-                current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": current_user_prompt + str(text)}
-                    ])
-                answer = response.choices[0].message.content
-
-                if srt == "原始语言为首":
-                    result['segments'][segment_id]['text'] = str(text) + "\n" + str(answer)
-                elif srt == "目标语言为首":
-                    result['segments'][segment_id]['text'] = str(answer) + "\n" + str(text)
-                else:
-                    result['segments'][segment_id]['text'] = answer
-
-                segment_id += 1
-                print(answer)
-
-                previous_texts.append(text)
-                if len(previous_texts) > context_size:
-                    previous_texts.pop(0)
-
-                time.sleep(wait_time)
-
-        elif "claude" in model:
-            if base_url != "https://api.anthropic.com/v1/messages":
-                print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-            print(f"\033[1;34m📝 翻译内容: \033[0m")
-            segment_id = 0
-            segments = result['segments']
-            client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
-
-            context_size = 2
-            previous_texts = []
-            original_user_prompt = user_prompt
-
-            for segment in segments:
-                text = segment['text']
-
-                if len(previous_texts) > 0:
-                    combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                else:
-                    combined_text = text
-                current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                message = client.messages.create(
-                    model=model,
-                    max_tokens=1024,
-                    system=system_prompt,
-                    messages=[
-                        {"role": "user", "content": current_user_prompt + str(text)}
-                    ])
-
-                answer = message.content[0]['text']
-                if srt == "原始语言为首":
-                    result['segments'][segment_id]['text'] = str(text) + "\n" + str(answer)
-                elif srt == "目标语言为首":
-                    result['segments'][segment_id]['text'] = str(answer) + "\n" + str(text)
-                else:
-                    result['segments'][segment_id]['text'] = answer
-                segment_id += 1
-                print(answer)
-
-                previous_texts.append(text)
-                if len(previous_texts) > context_size:
-                    previous_texts.pop(0)
-
-                time.sleep(wait_time)
-
-        elif "gemini" in model:
-            if base_url is None:
-                print("- Python SDK 调用：如果需要使用代理，请填写 BASE_URL，系统将自动启用代理模式！")
-                segment_id = 0
-                segments = result['segments']
-
-                context_size = 2
-                previous_texts = []
-                original_user_prompt = user_prompt
-
-                print(f"\033[1;34m📝 翻译内容: \033[0m")
-                for segment in segments:
-                    text = segment['text']
-
-                    if len(previous_texts) > 0:
-                        combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                    else:
-                        combined_text = text
-                    current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(model)
-                    answer = model.generate_content(system_prompt + current_user_prompt + str(text))
-                    if srt == "原始语言为首":
-                        result['segments'][segment_id]['text'] = str(text) + "\n" + str(answer)
-                    elif srt == "目标语言为首":
-                        result['segments'][segment_id]['text'] = str(answer) + "\n" + str(text)
-                    else:
-                        result['segments'][segment_id]['text'] = answer
-                    segment_id += 1
-                    print(answer.text)
-
-                    previous_texts.append(text)
-                    if len(previous_texts) > context_size:
-                        previous_texts.pop(0)
-
-                    time.sleep(wait_time)
-            else:
-                print("- Request 请求调用（适用于代理模式，若不想使用Request模式，请把BASE_URL留空！)")
-                print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-                print(f"\033[1;34m📝 翻译内容: \033[0m")
-                segment_id = 0
-                segments = result['segments']
-
-                context_size = 2
-                previous_texts = []
-                original_user_prompt = user_prompt
-
-                for segment in segments:
-                    text = segment['text']
-
-                    if len(previous_texts) > 0:
-                        combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                    else:
-                        combined_text = text
-                    current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                    payload = json.dumps({
-                        "model": model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": system_prompt
-                            },
-                            {
-                                "role": "user",
-                                "content": current_user_prompt + str(text)
-                            }
-                        ],
-                        "temperature": 0.8
-                    })
-                    headers = {
-                        'Content-Type': 'application/json',
-                        'Authorization': api_key
-                    }
-                    response = requests.request("POST", base_url, headers=headers, data=payload)
-                    answer = response.json()
-                    try:
-                        answer = answer["choices"][0]["message"]["content"]
-                        if srt == "原始语言为首":
-                            result['segments'][segment_id]['text'] = str(text) + "\n" + str(answer)
-                        elif srt == "目标语言为首":
-                            result['segments'][segment_id]['text'] = str(answer) + "\n" + str(text)
-                        else:
-                            result['segments'][segment_id]['text'] = answer
-                        segment_id += 1
-                        print(answer.text)
-
-                        previous_texts.append(text)
-                        if len(previous_texts) > context_size:
-                            previous_texts.pop(0)
-
-                        time.sleep(wait_time)
-                    except Exception as e:
-                        print("\n\033[1;31m------- 请阅读下方报错内容 -------\033[0m\n")
-                        print(f"\033[1;31m❌ 发生错误: {type(e).__name__}\033[0m")
-                        print(f"\033[1;33m💬 错误详情: \033[0m\n{answer}\n")
-                        print("\033[1;31m------- 请根据报错内容检查你的 API Key 或代理配置 -------\033[0m\n")
-                        raise e
-
-        else:
-            print(f"\033[1;34m📝 翻译内容: \033[0m")
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            segment_id = 0
-            segments = result['segments']
-
-            context_size = 2
-            previous_texts = []
-            original_user_prompt = user_prompt
-
-            for segment in segments:
-                text = segment['text']
-
-                if len(previous_texts) > 0:
-                    combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                else:
-                    combined_text = text
-                current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": current_user_prompt + str(text)}
-                    ])
-                answer = response.choices[0].message.content
-
-                if srt == "原始语言为首":
-                    result['segments'][segment_id]['text'] = str(text) + "\n" + str(answer)
-                elif srt == "目标语言为首":
-                    result['segments'][segment_id]['text'] = str(answer) + "\n" + str(text)
-                else:
-                    result['segments'][segment_id]['text'] = answer
-                segment_id += 1
-                print(answer)
-
-                previous_texts.append(text)
-                if len(previous_texts) > context_size:
-                    previous_texts.pop(0)
-
-                time.sleep(wait_time)
+    for index, (original, translated) in enumerate(zip(texts, translations)):
+        segments[index]['text'] = _compose_bilingual(original, translated, srt)
     return result
 
 
@@ -478,12 +474,14 @@ def local_translate(system_prompt, user_prompt, api_key, base_url, model, result
 
     for segment in segments:
         text = segment['text']
+        if len(text) > 20:
+            text = str(text)[1:20]
 
         if len(previous_texts) > 0:
             combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
         else:
             combined_text = text
-        current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
+        current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text).replace("{subtitles}", "")
 
         response = client.chat.completions.create(
             model=model,
@@ -523,7 +521,7 @@ def generate_srt_from_result(result):  # 格式化为SRT字幕的形式
     for segment in segments:
         start_time = int(segment['start'] * 1000)
         end_time = int(segment['end'] * 1000)
-        text = segment['text']
+        text = segment['text'].replace("Text:", "").replace("翻译：", "")
 
         srt_content += f"{segment_id}\n"
         srt_content += f"{milliseconds_to_srt_time_format(start_time)} --> {milliseconds_to_srt_time_format(end_time)}\n"
@@ -553,6 +551,7 @@ def check_cuda_installed():
         return True
     else:
         return False
+
 
 def check_ffmpeg_hwaccel():
     try:
@@ -699,7 +698,6 @@ def add_font_settings(srt_content, font_color, font_face, font_size, srt_setting
 
 
 def srt_to_vtt(srt_content):
-
     blocks = srt_content.strip().split('\n\n')
     vtt_lines = ['WEBVTT\n']
 
@@ -716,7 +714,6 @@ def srt_to_vtt(srt_content):
 
 
 def srt_to_ass(srt_content, fontname="Arial", size=20, color="&H00FFFFFF"):
-
     lines = srt_content.strip().split('\n\n')
     ass_header = (
         '[Script Info]\n'
@@ -744,7 +741,6 @@ def srt_to_ass(srt_content, fontname="Arial", size=20, color="&H00FFFFFF"):
 
 
 def srt_to_sbv(srt_content):
-
     lines = srt_content.strip().split('\n\n')
     sbv_content = ''
 
@@ -760,7 +756,6 @@ def srt_to_sbv(srt_content):
 
 
 def convert_srt_time_to_sbv(time_str):
-
     hours, minutes, seconds = time_str.split(':')
     seconds, milliseconds = seconds.split(',')
     milliseconds = int(milliseconds) / 10
@@ -782,12 +777,14 @@ def local_translate_srt(system_prompt, user_prompt, api_key, base_url, model, sr
 
     for segment in srt_content:
         text = segment['text']
+        if len(text) > 20:
+            text = str(text)[1:20]
 
         if len(previous_texts) > 0:
             combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
         else:
             combined_text = text
-        current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
+        current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text).replace("{subtitles}", "")
 
         response = client.chat.completions.create(
             model=model,
@@ -816,269 +813,16 @@ def translate_srt(system_prompt, user_prompt, api_key, base_url, model, srt_cont
     print("\n\033[1;35m*** API 调用翻译模式 ***\033[0m\n")
     print(f"\033[1;34m🈴 翻译模型: {model}\033[0m")
     global_key, global_url, all_in_one = get_global_info()
-    if all_in_one:
-        print(f"\033[1;34m📝 翻译内容: \033[0m")
-        print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-        client = OpenAI(api_key=global_key, base_url=global_url)
 
-        segment_id = 0
-        context_size = 2
-        previous_texts = []
-        original_user_prompt = user_prompt
+    texts = [str(item['text']) for item in srt_content]
+    translations = _provider_batch_translate(
+        system_prompt, user_prompt, texts, api_key, base_url, model,
+        wait_time, all_in_one, global_key, global_url)
+    for answer in translations:
+        print(answer)
 
-        for segment in srt_content:
-            text = segment['text']
-
-            if len(previous_texts) > 0:
-                combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-            else:
-                combined_text = text
-            current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": current_user_prompt + str(text)}
-                ])
-            answer = response.choices[0].message.content
-            if srt == "原始语言为首":
-                srt_content[segment_id]['text'] = str(text) + "\n" + str(answer)
-            elif srt == "目标语言为首":
-                srt_content[segment_id]['text'] = str(answer) + "\n" + str(text)
-            else:
-                srt_content[segment_id]['text'] = answer
-            segment_id += 1
-            print(answer)
-
-            previous_texts.append(text)
-            if len(previous_texts) > context_size:
-                previous_texts.pop(0)
-
-            time.sleep(wait_time)
-    else:
-        if "gpt" in model:
-            if base_url != "https://api.openai.com/v1":
-                print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-            print(f"\033[1;34m📝 翻译内容: \033[0m")
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            segment_id = 0
-
-            context_size = 2
-            previous_texts = []
-            original_user_prompt = user_prompt
-
-            for segment in srt_content:
-                text = segment['text']
-
-                if len(previous_texts) > 0:
-                    combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                else:
-                    combined_text = text
-                current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": current_user_prompt + str(text)}
-                    ])
-                answer = response.choices[0].message.content
-
-                if srt == "原始语言为首":
-                    srt_content[segment_id]['text'] = str(text) + "\n" + str(answer)
-                elif srt == "目标语言为首":
-                    srt_content[segment_id]['text'] = str(answer) + "\n" + str(text)
-                else:
-                    srt_content[segment_id]['text'] = answer
-                segment_id += 1
-                print(answer)
-
-                previous_texts.append(text)
-                if len(previous_texts) > context_size:
-                    previous_texts.pop(0)
-
-                time.sleep(wait_time)
-
-        elif "claude" in model:
-            if base_url != "https://api.anthropic.com/v1/messages":
-                print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-            print(f"\033[1;34m📝 翻译内容: \033[0m")
-            segment_id = 0
-
-            context_size = 2
-            previous_texts = []
-            original_user_prompt = user_prompt
-
-            for segment in srt_content:
-                text = segment['text']
-
-                if len(previous_texts) > 0:
-                    combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                else:
-                    combined_text = text
-                current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
-                message = client.messages.create(
-                    model=model,
-                    max_tokens=1024,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": current_user_prompt + str(text)}])
-                answer = message.content[0]['text']
-                if srt == "原始语言为首":
-                    srt_content[segment_id]['text'] = str(text) + "\n" + str(answer)
-                elif srt == "目标语言为首":
-                    srt_content[segment_id]['text'] = str(answer) + "\n" + str(text)
-                else:
-                    srt_content[segment_id]['text'] = answer
-                segment_id += 1
-                print(answer)
-
-                previous_texts.append(text)
-                if len(previous_texts) > context_size:
-                    previous_texts.pop(0)
-
-                time.sleep(wait_time)
-
-        elif "gemini" in model:
-            print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-            if base_url is None:
-                print("- Python SDK 调用（若想使用代理，请填入对应的BASE_URL后自动使用代理模式！)")
-                print(f"\033[1;34m📝 翻译内容: \033[0m")
-                segment_id = 0
-
-                context_size = 2
-                previous_texts = []
-                original_user_prompt = user_prompt
-
-                for segment in srt_content:
-                    text = segment['text']
-
-                    if len(previous_texts) > 0:
-                        combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                    else:
-                        combined_text = text
-                    current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(model)
-                    answer = model.generate_content(system_prompt + current_user_prompt  + str(text))
-
-                    if srt == "原始语言为首":
-                        srt_content[segment_id]['text'] = str(text) + "\n" + str(answer)
-                    elif srt == "目标语言为首":
-                        srt_content[segment_id]['text'] = str(answer) + "\n" + str(text)
-                    else:
-                        srt_content[segment_id]['text'] = answer
-                    segment_id += 1
-                    print(answer.text)
-
-                    previous_texts.append(text)
-                    if len(previous_texts) > context_size:
-                        previous_texts.pop(0)
-
-                    time.sleep(wait_time)
-            else:
-                print("- Request 请求调用（适用于代理模式，若不想使用Request模式，请把BASE_URL留空！)")
-                print(f"\033[1;34m📝 翻译内容: \033[0m")
-                segment_id = 0
-
-                context_size = 2
-                previous_texts = []
-                original_user_prompt = user_prompt
-
-                for segment in srt_content:
-                    text = segment['text']
-
-                    if len(previous_texts) > 0:
-                        combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                    else:
-                        combined_text = text
-                    current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                    payload = json.dumps({
-                        "model": model,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": system_prompt
-                            },
-                            {
-                                "role": "user",
-                                "content": current_user_prompt + str(text)
-                            }
-                        ],
-                        "temperature": 0.8
-                    })
-                    headers = {
-                        'Content-Type': 'application/json',
-                        'Authorization': api_key
-                    }
-                    response = requests.request("POST", base_url, headers=headers, data=payload)
-                    answer = response.json()
-                    try:
-                        answer = answer["choices"][0]["message"]["content"]
-                        if srt == "原始语言为首":
-                            srt_content[segment_id]['text'] = str(text) + "\n" + str(answer)
-                        elif srt == "目标语言为首":
-                            srt_content[segment_id]['text'] = str(answer) + "\n" + str(text)
-                        else:
-                            srt_content[segment_id]['text'] = answer
-                        segment_id += 1
-                        print(answer.text)
-
-                        previous_texts.append(text)
-                        if len(previous_texts) > context_size:
-                            previous_texts.pop(0)
-
-                        time.sleep(wait_time)
-                    except Exception as e:
-                        print("-------请阅读下方报错内容------\n")
-                        print(f"An error occurred: {type(e).__name__}, with message: \n {answer}")
-                        print("\n-------请根据报错检查你的key或者代理-------\n")
-                        raise e
-
-        else:
-            print(f"\033[1;34m🌐 代理地址: {base_url}\033[0m")
-            print(f"\033[1;34m📝 翻译内容: \033[0m")
-            client = OpenAI(api_key=api_key, base_url=base_url)
-
-            segment_id = 0
-            context_size = 2
-            previous_texts = []
-            original_user_prompt = user_prompt
-
-            for segment in srt_content:
-                text = segment['text']
-
-                if len(previous_texts) > 0:
-                    combined_text = "\n".join(previous_texts[-context_size:]) + "\n"
-                else:
-                    combined_text = text
-                current_user_prompt = original_user_prompt.replace("{combined_text}", combined_text)
-
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": current_user_prompt + str(text)}
-                    ])
-                answer = response.choices[0].message.content
-                if srt == "原始语言为首":
-                    srt_content[segment_id]['text'] = str(text) + "\n" + str(answer)
-                elif srt == "目标语言为首":
-                    srt_content[segment_id]['text'] = str(answer) + "\n" + str(text)
-                else:
-                    srt_content[segment_id]['text'] = answer
-                segment_id += 1
-                print(answer)
-
-                previous_texts.append(text)
-                if len(previous_texts) > context_size:
-                    previous_texts.pop(0)
-
-                time.sleep(wait_time)
+    for index, (original, translated) in enumerate(zip(texts, translations)):
+        srt_content[index]['text'] = _compose_bilingual(original, translated, srt)
     return srt_content
 
 
@@ -1138,8 +882,10 @@ def write_llms(view, language, key, url, model, text, token, temp):
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
-                {"role": "user", "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
+                {"role": "system",
+                 "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
+                {"role": "user",
+                 "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
             ])
         answer = response.choices[0].message.content
         print(f"\033[1;34m📝 写作内容: \033[0m")
@@ -1154,8 +900,10 @@ def write_llms(view, language, key, url, model, text, token, temp):
                 model=model,
                 temperature=temp,
                 messages=[
-                    {"role": "system", "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
-                    {"role": "user", "content": f"请你根据下面的文本内写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
+                    {"role": "system",
+                     "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
+                    {"role": "user",
+                     "content": f"请你根据下面的文本内写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
                 ]
             )
             answer = response.choices[0].message.content
@@ -1170,7 +918,8 @@ def write_llms(view, language, key, url, model, text, token, temp):
                 max_tokens=1024,
                 temperature=temp,
                 system="你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰",
-                messages=[{"role": "user", "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}]
+                messages=[{"role": "user",
+                           "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}]
             )
 
             answer = message.content[0]['text']
@@ -1181,7 +930,8 @@ def write_llms(view, language, key, url, model, text, token, temp):
                 print(f"\033[1;34m🌐 代理地址: {url}\033[0m")
                 genai.configure(client_options={"api_key": key})
                 model = genai.GenerativeModel(model)
-                answer = model.generate_content("请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}")
+                answer = model.generate_content(
+                    "请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}")
                 print(f"\033[1;34m📝 写作内容: \033[0m")
                 print(answer)
             else:
@@ -1192,8 +942,10 @@ def write_llms(view, language, key, url, model, text, token, temp):
                 payload = json.dumps({
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
-                        {"role": "user", "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
+                        {"role": "system",
+                         "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
+                        {"role": "user",
+                         "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
                     ],
                     "temperature": 0.8
                 })
@@ -1216,8 +968,10 @@ def write_llms(view, language, key, url, model, text, token, temp):
             response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
-                    {"role": "user", "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
+                    {"role": "system",
+                     "content": "你是一个知识渊博且擅长分析的写作助手。你的任务是帮助用户基于文本内容重新创作一篇文章或总结，需遵循以下要求：1. 确保文章结构合理 2. 根据用户的要求调整文章的语气、风格、视角 3.确保文章结构合理，逻辑清晰"},
+                    {"role": "user",
+                     "content": f"请你根据下面的文本内容写一篇{language}的文章或总结，写作时请遵循以下规则：1. 请以{view}的视角写作 2. 总篇幅不得少于{token}字 3.确保逻辑清晰、核心内容完整。文本内容：\n{text}"}
                 ])
             answer = response.choices[0].message.content
             print(f"\033[1;34m📝 写作内容: \033[0m")
@@ -1229,3 +983,16 @@ def write_llms(view, language, key, url, model, text, token, temp):
 def encode_image(path):
     with open(path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+def readSrt(srtName):
+    transcribedSubtitles = []
+    srts = pysrt.open(srtName)
+    for index in range(len(srts)):
+        text: str = srts[index].text
+        startTime: float = srts[index].start
+        endTime: float = srts[index].end
+        transcribedSubtitles.append(((startTime, endTime), text))
+    return transcribedSubtitles
+
+def get_duration_from_moviepy(url):
+    clip = VideoFileClip(url)
+    return clip.duration
