@@ -633,9 +633,11 @@ with tab3:
                     st.write("")
 
                     @st.fragment()
-                    def sichang_form():
-                        url = st.text_input("**API 地址**", url, placeholder="SiChang API 接口", help="默认值：`https://sichang.xyz/api/v1`")
-                        key = st.text_input("**API 密钥**", key, placeholder="思畅 API 密钥（sc_ 开头，需勾选文本对话权限）")
+                    def sichang_form(url=url, key=key, model=model):
+                        url = st.text_input("**API 地址**", url, placeholder="SiChang API 接口",
+                                            help="默认值：`https://sichang.xyz/api/v1`", key="sichang_url_input")
+                        key = st.text_input("**API 密钥**", key, placeholder="思畅 API 密钥（sc_ 开头，需勾选文本对话权限）",
+                                            key="sichang_key_input")
                         st.write("")
                         if st.button("**获取模型列表**", use_container_width=True, type="primary"):
                             if not key:
@@ -668,9 +670,11 @@ with tab3:
                         if models:
                             model_index = models.index(model) if model in models else 0
                             model = st.selectbox("**模型名称**", models, index=model_index,
-                                                 help="来自 GET /v1/models 接口的实时返回，模型更新后重新获取即可")
+                                                 help="来自 GET /v1/models 接口的实时返回，模型更新后重新获取即可",
+                                                 key="sichang_model_select")
                         else:
-                            st.text_input("**模型名称**", model, placeholder="请先点击上方按钮获取模型列表", disabled=True)
+                            st.text_input("**模型名称**", model, placeholder="请先点击上方按钮获取模型列表",
+                                          disabled=True, key="sichang_model_disabled")
                         st.write("")
                         if st.button("**保存配置**", use_container_width=True, type="primary"):
                             if not model:
