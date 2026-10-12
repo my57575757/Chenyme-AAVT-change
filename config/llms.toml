@@ -47,9 +47,9 @@ key = ""
 url = "https://api.lingyiwanwu.com/v1"
 
 [SiChang]
-key = ""
+key = "sc_lV-omd9jJrNw2q6IXElY-Bn8B_8-8YONoirmKEBPXkc"
 url = "https://sichang.xyz/api/v1"
-model = ""
+model = "gemma-4-uncensored"
 
 [translate]
 context_size = 2
