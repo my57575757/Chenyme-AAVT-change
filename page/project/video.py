@@ -1,8 +1,10 @@
 import os
 import re
+import sys
 import json
 import toml
 import time
+import threading
 import datetime
 import traceback
 import streamlit as st
@@ -181,6 +183,310 @@ translation_dict = {
     (30, 38): 'yi-large-preview',
     (39, 40): 'sichang'
 }
+
+
+class DirectoryBatchState:
+    """视频目录批量任务的跨线程状态:后台工作线程写,页面脚本线程/进度 fragment 读。"""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = False
+        self.finished = False
+        self.total = 0
+        self.index = 0
+        self.current = ""
+        self.message = ""
+        self.count_ok = 0
+        self.count_skip = 0
+        self.count_fail = 0
+        self.fatal_error = ""
+
+    def try_start(self) -> bool:
+        with self.lock:
+            if self.running:
+                return False
+            self.running = True
+            self.finished = False
+            self.total = 0
+            self.index = 0
+            self.current = ""
+            self.message = "任务启动中"
+            self.count_ok = 0
+            self.count_skip = 0
+            self.count_fail = 0
+            self.fatal_error = ""
+            return True
+
+
+@st.cache_resource(show_spinner=False)
+def _get_directory_batch_state() -> DirectoryBatchState:
+    # Streamlit 每次 rerun(含 fragment 轮询)都会重新 exec 页面脚本,
+    # 模块级变量会重建;用 cache_resource 保证后台线程与页面读到同一个 state 实例
+    return DirectoryBatchState()
+
+
+directory_batch_state = _get_directory_batch_state()
+
+
+def _directory_batch_worker(state: DirectoryBatchState):
+    # daemon 后台线程执行批量任务:浏览器断线/切菜单只会终止 Streamlit 脚本 run
+    # (StopException/RerunException),不影响本线程。线程内禁止调用任何 st.* 接口,
+    # 进度写入 state,详细日志走 print/tqdm(终端可见)。
+    for _stream in (sys.stdout, sys.stderr):
+        # 非脚本线程直连原始控制台流,Windows 简体环境常为 GBK,调用链(public.py)大量 emoji
+        # print 会 UnicodeEncodeError;统一切到 UTF-8,不可编码字符替换,保证批量不被日志炸断
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+    import builtins as _builtins
+
+    def print(*args, **kwargs):
+        # 后台线程不经过 Streamlit 脚本线程的 stdout 捕获,直接写原始控制台流(Windows 常为 GBK),
+        # emoji 编码会抛 UnicodeEncodeError 把异常炸进外层 except;不可编码字符替换后再写
+        stream = kwargs.get("file") or sys.stdout
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        try:
+            _builtins.print(*args, **kwargs)
+        except UnicodeEncodeError:
+            safe_args = [str(a).encode(encoding, errors="replace").decode(encoding, errors="replace")
+                         for a in args]
+            _builtins.print(*safe_args, file=stream, **{k: v for k, v in kwargs.items() if k != "file"})
+
+    try:
+        videos = findVideos(video_local_path)
+        state.total = len(videos)
+        for filePath in tqdm(videos, desc="正在生成字幕"):
+            state.index += 1
+            state.current = os.path.basename(filePath)
+            print("\n" + "=" * 50)
+            print("\n\033[1;39m*** Chenyme-AAVT AI音频识别 ***\033[0m")
+            video_name_original = os.path.splitext(filePath)[0]
+            srtZhName = f"{video_name_original}.srt"
+            srtOldName = f"{video_name_original}-old.srt"
+            erroFile = f"{video_name_original}_erro.txt"
+            # 每个视频独立判断是否复用本地 -old.srt,不能沿用上一轮的值
+            isLocalSrt = False
+            # 判断存在错误文件跳过
+            if os.path.exists(erroFile):
+                print('存在错误文件')
+                state.count_skip += 1
+                continue
+            # 判断中文字幕文件是否存在存在跳过
+            if os.path.exists(srtZhName) or video_name_original.endswith("-c") or video_name_original.endswith("-C"):
+                print('翻译字幕已存在')
+                state.count_skip += 1
+                continue
+            output_file = os.path.dirname(filePath)
+            print("\033[1;34m🚀 任务开始执行\033[0m")
+            print(f"\033[1;34m📂 本次任务目录:\033[0m\033[1;34m {filePath} \033[0m")
+            print("\033[1;33m⚠️ 任务运行期间可正常切换菜单,但请勿修改识别/翻译参数！\033[0m")
+            state.message = "视频预处理中"
+            # 判断视频大小小于100m不生成字幕
+            try:
+                size = get_file_size(filePath)
+                if size < 104857600:
+                    print('视频小于100m')
+                    state.count_skip += 1
+                    continue
+                # 判断视频时长是否大于5分钟,小于则不生成字幕
+                duration = get_duration_from_moviepy(filePath)
+                if duration < 300:
+                    print('时长不足5分钟')
+                    state.count_skip += 1
+                    continue
+                FileToMp3(log_setting, filePath, output_file)
+            except Exception:
+                if os.path.exists(output_file + "/output.mp3"):
+                    os.remove(output_file + "/output.mp3")
+                print(f"\033[1;31m❌ 预处理失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
+                print(traceback.format_exc(), end="")
+                state.message = f"预处理失败: {os.path.basename(filePath)}"
+                state.count_fail += 1
+                continue
+            state.message = "正在识别视频内容"
+            # 判断是否有原语言文件
+            if os.path.exists(srtOldName):
+                isLocalSrt = True
+            else:
+                if whisper_mode == "OpenAIWhisper - API":
+                    result = OpenaiWhisperResult(chatgpt_key, chatgpt_url, output_file, openai_whisper_model_index,
+                                                 whisper_prompt, whisper_temp)
+                if whisper_mode == "FasterWhisper - AutoDownload":
+                    result = runWhisperSeperateProc(output_file, faster_gpu, faster_whisper_model_index,
+                                                    faster_prompt, faster_temp, faster_vad, language_index,
+                                                    faster_beam_size, faster_min_vad, video_name_original)
+                if whisper_mode == "FasterWhisper - LocalModel":
+                    result = runWhisperSeperateProc(output_file, faster_local_gpu, faster_whisper_model_local_index,
+                                                    faster_local_prompt, faster_local_temp, faster_local_vad,
+                                                    language_index, faster_local_beam_size, faster_local_min_vad,
+                                                    video_name_original)
+                if 'error' in result:
+                    # 删除mp3
+                    if os.path.exists(output_file + "/output.mp3"):
+                        os.remove(output_file + "/output.mp3")
+                    print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
+                    state.message = f"识别失败: {os.path.basename(filePath)}"
+                    state.count_fail += 1
+                    continue
+                print("\033[1;34m🎉 Whisper 识别成功！\033[0m")
+                # 保存原语言文件
+                with open(srtOldName, 'w', encoding='utf-8') as srt_old_file:
+                    old_content = generate_srt_from_result(result)
+                    srt_old_file.write(old_content)
+                state.message = "视频内容识别完成"
+
+            translate_option = translation_dict[tuple(video_translate_index)]
+
+            try:
+                if isLocalSrt:
+                    srt_content = read_srt_file(srtOldName)
+                    state.message = "正在翻译字幕"
+                    if '本地模型' in translate_option:
+                        result = local_translate_srt(system_prompt, user_prompt, local_key, local_url, local_model,
+                                                     srt_content, srt_setting)
+                    elif 'gemini' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, gemini_key, gemini_url, translate_option,
+                                               srt_content, video_wait_time_setting, srt_setting)
+                    elif 'yi' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, ai01_key, ai01_url, translate_option,
+                                               srt_content, video_wait_time_setting, srt_setting)
+                    elif 'gpt' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, chatgpt_key, chatgpt_url,
+                                               translate_option, srt_content, video_wait_time_setting, srt_setting)
+                    elif 'moonshot' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, kimi_key, kimi_base, translate_option,
+                                               srt_content, video_wait_time_setting, srt_setting)
+                    elif 'glm' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, chatglm_key, chatglm_url,
+                                               translate_option, srt_content, video_wait_time_setting, srt_setting)
+                    elif 'deepseek' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, deepseek_key, deepseek_url,
+                                               translate_option, srt_content, video_wait_time_setting, srt_setting)
+                    elif 'sichang' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, sichang_key, sichang_url,
+                                               sichang_model, srt_content, video_wait_time_setting, srt_setting)
+                    elif 'claude' in translate_option:
+                        result = translate_srt(system_prompt, user_prompt, claude_key, claude_url,
+                                               translate_option, srt_content, video_wait_time_setting, srt_setting)
+                    print("\033[1;34m🎉 字幕翻译已完成！\033[0m")
+                    srt_content = ""
+                    for i, subtitle in enumerate(result, start=1):
+                        print(f"{subtitle}\n")
+                        srt_content += f"{i}\n"
+                        srt_content += f"{subtitle['time']}\n"
+                        srt_content += subtitle['text'].replace('\n', '\n') + "\n\n"
+                else:
+                    if translate_option != '无需翻译':
+                        state.message = "正在翻译字幕"
+                        if '本地模型' in translate_option:
+                            result = local_translate(system_prompt, user_prompt, local_key, local_url, local_model,
+                                                     result, srt_setting)
+                        elif 'gemini' in translate_option:
+                            result = translate(system_prompt, user_prompt, gemini_key, gemini_url, translate_option,
+                                               result, video_wait_time_setting, srt_setting)
+                        elif 'yi' in translate_option:
+                            result = translate(system_prompt, user_prompt, ai01_key, ai01_url, translate_option, result,
+                                               video_wait_time_setting, srt_setting)
+                        elif 'gpt' in translate_option:
+                            result = translate(system_prompt, user_prompt, chatgpt_key, chatgpt_url, translate_option,
+                                               result, video_wait_time_setting, srt_setting)
+                        elif 'moonshot' in translate_option:
+                            result = translate(system_prompt, user_prompt, kimi_key, kimi_base, translate_option,
+                                               result, video_wait_time_setting, srt_setting)
+                        elif 'glm' in translate_option:
+                            result = translate(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option,
+                                               result, video_wait_time_setting, srt_setting)
+                        elif 'deepseek' in translate_option:
+                            result = translate(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option,
+                                               result, video_wait_time_setting, srt_setting)
+                        elif 'sichang' in translate_option:
+                            result = translate(system_prompt, user_prompt, sichang_key, sichang_url, sichang_model,
+                                               result, video_wait_time_setting, srt_setting)
+                        elif 'claude' in translate_option:
+                            result = translate(system_prompt, user_prompt, claude_key, claude_url, translate_option,
+                                               result, video_wait_time_setting, srt_setting)
+                        print("\033[1;34m🎉 字幕翻译已完成！\033[0m")
+                        state.message = "翻译任务结束"
+
+                    print("\n\033[1;35m*** 正在生成 SRT 字幕文件 ***\033[0m\n")
+                    srt_content = generate_srt_from_result(result)
+            except TranslationRefused as e:
+                # 触发模型内容安全策略:不生成翻译字幕,保留原文 -old.srt,跳过该视频继续下一个
+                if os.path.exists(output_file + "/output.mp3"):
+                    os.remove(output_file + "/output.mp3")
+                print(f"\033[1;33m⚠️ 触发内容安全策略,跳过该视频翻译字幕: {os.path.basename(filePath)}\033[0m")
+                print(f"\033[1;33m💬 模型回复: {e}\033[0m")
+                state.message = f"内容安全拒答,跳过: {os.path.basename(filePath)}"
+                state.count_fail += 1
+                continue
+            except Exception:
+                # 翻译阶段任何其他异常(API 超时/网络/返回格式等)都不允许终止整个批量任务
+                if os.path.exists(output_file + "/output.mp3"):
+                    os.remove(output_file + "/output.mp3")
+                print(f"\033[1;31m❌ 翻译失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
+                print(traceback.format_exc(), end="")
+                state.message = f"翻译失败: {os.path.basename(filePath)}"
+                state.count_fail += 1
+                continue
+
+            try:
+                with open(srtZhName, 'w', encoding='utf-8') as srt_file:
+                    srt_file.write(srt_content)
+            except Exception:
+                # 写入失败(磁盘/NAS 抖动):删除残缺字幕,允许下次重跑,不中断整批
+                if os.path.exists(srtZhName):
+                    os.remove(srtZhName)
+                print(f"\033[1;31m❌ 翻译字幕写入失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
+                print(traceback.format_exc(), end="")
+                state.message = f"字幕写入失败: {os.path.basename(filePath)}"
+                state.count_fail += 1
+                continue
+            # 删除mp3
+            if os.path.exists(output_file + "/output.mp3"):
+                os.remove(output_file + "/output.mp3")
+            print("\033[1;34m🎉 任务成功结束！\033[0m")
+            print("\n" + "=" * 50 + "\n")
+            state.count_ok += 1
+            state.message = f"已完成: {os.path.basename(filePath)}"
+    except BaseException:
+        # 线程内没有 Streamlit 兜底,任何意外都必须落盘到 state,避免静默消失
+        state.fatal_error = traceback.format_exc()
+        print(f"\033[1;31m❌ 批量任务异常终止:\n{state.fatal_error}\033[0m")
+    finally:
+        state.running = False
+        state.finished = True
+        if not state.fatal_error:
+            state.message = "批量任务已结束"
+
+
+def _start_directory_batch() -> bool:
+    if not directory_batch_state.try_start():
+        return False
+    threading.Thread(target=_directory_batch_worker,
+                     args=(directory_batch_state,), daemon=True).start()
+    return True
+
+
+@st.fragment(run_every=2)
+def _directory_batch_panel():
+    state = directory_batch_state
+    if not (state.running or state.finished):
+        return
+    if state.running:
+        if state.total > 0:
+            st.progress(state.index / state.total,
+                        text=f"后台批量任务进行中：{state.index}/{state.total}")
+        st.caption(f"当前文件：{state.current}")
+        st.caption(f"✅ 成功 {state.count_ok}　⏭️ 跳过 {state.count_skip}　❌ 失败 {state.count_fail}")
+        st.caption(f"状态：{state.message}")
+        st.caption("任务在后台线程运行，切换菜单或浏览器断线不会中断；详细日志见运行 streamlit 的终端。")
+    elif state.fatal_error:
+        st.error("批量任务异常终止，已产出字幕的视频不会重跑。错误信息末尾：\n\n```\n"
+                 f"{state.fatal_error[-1500:]}\n```")
+    else:
+        st.success(f"批量任务结束：✅ 成功 {state.count_ok}　⏭️ 跳过 {state.count_skip}　❌ 失败 {state.count_fail}")
 
 
 @st.dialog("使用提示")
@@ -501,193 +807,14 @@ with tab1:
     with col2:
         st.write("")
         allow = st.checkbox("**本次不合并视频**", help="勾选后，本次识别过程中仅识别并翻译(如果有)视频字幕，不主动合并字幕。")
-        srtOldCon = ""
-        isLocalSrt = False
-        if st.button("**开始识别**", type="primary", use_container_width=True):
+        if st.button("**开始识别**", type="primary", use_container_width=True,
+                     disabled=directory_batch_state.running):
             print("视频文件目录:"+video_local_path)
             if len(video_local_path)>0:
-                for filePath in tqdm(findVideos(video_local_path), desc="正在生成字幕"):
-                    print("\n" + "=" * 50)
-                    print("\n\033[1;39m*** Chenyme-AAVT AI音频识别 ***\033[0m")
-                    st.toast('任务开始执行！请勿在运行时切换菜单或修改参数!', icon=":material/rocket_launch:")
-                    msg_ved = st.toast('正在对视频进行预处理', icon=":material/movie:")
-                    st.session_state.video_name_original = os.path.splitext(filePath)[0]
-                    st.session_state.srt_name = filePath
-                    srtZhName = f"{st.session_state.video_name_original}.srt"
-                    srtOldName = f"{st.session_state.video_name_original}-old.srt"
-                    erroFile = f"{st.session_state.video_name_original}_erro.txt"
-                    # 判断存在错误文件跳过
-                    if os.path.exists(erroFile):
-                        print('存在错误文件')
-                        continue
-                    # 判断中文字幕文件是否存在存在跳过
-                    if os.path.exists(srtZhName) or st.session_state.video_name_original.endswith("-c") or st.session_state.video_name_original.endswith("-C"):
-                        print('翻译字幕已存在')
-                        continue
-                    output_file = os.path.dirname(filePath)
-                    print("\n\033[1;34m🚀 任务开始执行\033[0m")
-                    print(f"\033[1;34m📂 本次任务目录:\033[0m\033[1;34m {st.session_state.srt_name} \033[0m")
-                    print("\033[1;33m⚠️ 请不要在任务运行期间切换菜单或修改参数！\033[0m")
-                    msg_ved.toast("视频预处理完成", icon=":material/movie:")
-                    # 判断视频大小小于100m不生成字幕
-                    try:
-                        size = get_file_size(filePath)
-                        if size<104857600:
-                            print('视频小于100m')
-                            continue
-                        # 判断视频时长是否大于5分钟,小于则不生成字幕
-                        time = get_duration_from_moviepy(filePath)
-                        if time<300:
-                            print('时长不足5分钟')
-                            continue
-                        FileToMp3(log_setting, filePath, output_file)
-                    except Exception:
-                        if os.path.exists(output_file + "/output.mp3"):
-                            os.remove(output_file + "/output.mp3")
-                        print(f"\033[1;31m❌ 预处理失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
-                        traceback.print_exc()
-                        continue
-                    msg_whs = st.toast("正在识别视频内容", icon=":material/troubleshoot:")
-                    # 判断是否有原语言文件
-                    if os.path.exists(srtOldName):
-                        srtOldCon = read_srt_file(srtOldName)
-                        isLocalSrt = True
-                    else:
-                        if whisper_mode == "OpenAIWhisper - API":
-                            result = OpenaiWhisperResult(chatgpt_key, chatgpt_url, output_file, openai_whisper_model_index,
-                                                         whisper_prompt, whisper_temp)
-                        if whisper_mode == "FasterWhisper - AutoDownload":
-                            result = runWhisperSeperateProc(output_file, faster_gpu, faster_whisper_model_index,
-                                                            faster_prompt, faster_temp, faster_vad, language_index,
-                                                            faster_beam_size, faster_min_vad, st.session_state.video_name_original)
-                        if whisper_mode == "FasterWhisper - LocalModel":
-                            result = runWhisperSeperateProc(output_file, faster_local_gpu, faster_whisper_model_local_index,
-                                                            faster_local_prompt, faster_local_temp, faster_local_vad,
-                                                            language_index, faster_local_beam_size, faster_local_min_vad, st.session_state.video_name_original)
-                        if 'error' in result:
-                            # 删除mp3
-                            if os.path.exists(output_file + "/output.mp3"):
-                                os.remove(output_file + "/output.mp3")
-                            print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
-                            # st.error(f"处理失败，错误信息：{result['error']}")
-                            # st.stop()
-                            continue
-                        print("\033[1;34m🎉 Whisper 识别成功！\033[0m")
-                        # 保存原语言文件
-                        with open(srtOldName, 'w', encoding='utf-8') as srt_old_file:
-                            old_content = generate_srt_from_result(result)
-                            srt_old_file.write(old_content)
-                        msg_whs.toast("视频内容识别完成", icon=":material/colorize:")
-
-                    translate_option = translation_dict[tuple(video_translate_index)]
-
-                    try:
-                        if isLocalSrt:
-                            srt_content = read_srt_file(srtOldName)
-                            msg_tra = st.toast("正在翻译字幕", icon=":material/translate:")
-                            if '本地模型' in translate_option:
-                                result = local_translate_srt(system_prompt, user_prompt, local_key, local_url, local_model,
-                                                             srt_content, srt_setting)
-                            elif 'gemini' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, gemini_key, gemini_url, translate_option,
-                                                       srt_content, video_wait_time_setting, srt_setting)
-                            elif 'yi' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, ai01_key, ai01_url, translate_option,
-                                                       srt_content, video_wait_time_setting, srt_setting)
-                            elif 'gpt' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, chatgpt_key, chatgpt_url,
-                                                       translate_option, srt_content, video_wait_time_setting, srt_setting)
-                            elif 'moonshot' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, kimi_key, kimi_base, translate_option,
-                                                       srt_content, video_wait_time_setting, srt_setting)
-                            elif 'glm' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, chatglm_key, chatglm_url,
-                                                       translate_option, srt_content, video_wait_time_setting, srt_setting)
-                            elif 'deepseek' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, deepseek_key, deepseek_url,
-                                                       translate_option, srt_content, video_wait_time_setting, srt_setting)
-                            elif 'sichang' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, sichang_key, sichang_url,
-                                                       sichang_model, srt_content, video_wait_time_setting, srt_setting)
-                            elif 'claude' in translate_option:
-                                result = translate_srt(system_prompt, user_prompt, claude_key, chatglm_url,
-                                                       translate_option, srt_content, video_wait_time_setting, srt_setting)
-                            print("\033[1;34m🎉 字幕翻译已完成！\033[0m")
-                            srt_content = ""
-                            for i, subtitle in enumerate(result, start=1):
-                                print(f"{subtitle}\n")
-                                srt_content += f"{i}\n"
-                                srt_content += f"{subtitle['time']}\n"
-                                srt_content += subtitle['text'].replace('\n', '\n') + "\n\n"
-                        else:
-                            if translate_option != '无需翻译':
-                                msg_tra = st.toast("正在翻译字幕", icon=":material/translate:")
-                                if '本地模型' in translate_option:
-                                    result = local_translate(system_prompt, user_prompt, local_key, local_url, local_model,
-                                                             result, srt_setting)
-                                elif 'gemini' in translate_option:
-                                    result = translate(system_prompt, user_prompt, gemini_key, gemini_url, translate_option,
-                                                       result, video_wait_time_setting, srt_setting)
-                                elif 'yi' in translate_option:
-                                    result = translate(system_prompt, user_prompt, ai01_key, ai01_url, translate_option, result,
-                                                       video_wait_time_setting, srt_setting)
-                                elif 'gpt' in translate_option:
-                                    result = translate(system_prompt, user_prompt, chatgpt_key, chatgpt_url, translate_option,
-                                                       result, video_wait_time_setting, srt_setting)
-                                elif 'moonshot' in translate_option:
-                                    result = translate(system_prompt, user_prompt, kimi_key, kimi_base, translate_option,
-                                                       result, video_wait_time_setting, srt_setting)
-                                elif 'glm' in translate_option:
-                                    result = translate(system_prompt, user_prompt, chatglm_key, chatglm_url, translate_option,
-                                                       result, video_wait_time_setting, srt_setting)
-                                elif 'deepseek' in translate_option:
-                                    result = translate(system_prompt, user_prompt, deepseek_key, deepseek_url, translate_option,
-                                                       result, video_wait_time_setting, srt_setting)
-                                elif 'sichang' in translate_option:
-                                    result = translate(system_prompt, user_prompt, sichang_key, sichang_url, sichang_model,
-                                                       result, video_wait_time_setting, srt_setting)
-                                elif 'claude' in translate_option:
-                                    result = translate(system_prompt, user_prompt, claude_key, claude_url, translate_option,
-                                                       result, video_wait_time_setting, srt_setting)
-                                print("\033[1;34m🎉 字幕翻译已完成！\033[0m")
-                                msg_tra.toast("翻译任务结束！", icon=":material/translate:")
-
-                            msg_srt = st.toast('正在生成SRT字幕文件', icon=":material/edit_note:")
-                            print("\n\033[1;35m*** 正在生成 SRT 字幕文件 ***\033[0m\n")
-                            srt_content = generate_srt_from_result(result)
-                    except TranslationRefused as e:
-                        # 触发模型内容安全策略:不生成翻译字幕,保留原文 -old.srt,跳过该视频继续下一个
-                        if os.path.exists(output_file + "/output.mp3"):
-                            os.remove(output_file + "/output.mp3")
-                        print(f"\033[1;33m⚠️ 触发内容安全策略,跳过该视频翻译字幕: {os.path.basename(filePath)}\033[0m")
-                        print(f"\033[1;33m💬 模型回复: {e}\033[0m")
-                        st.toast("该视频触发内容安全策略,已跳过翻译字幕生成", icon=":material/block:")
-                        continue
-                    except Exception:
-                        # 翻译阶段任何其他异常(API 超时/网络/返回格式等)都不允许终止整个批量任务
-                        if os.path.exists(output_file + "/output.mp3"):
-                            os.remove(output_file + "/output.mp3")
-                        print(f"\033[1;31m❌ 翻译失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
-                        traceback.print_exc()
-                        st.toast("该视频翻译失败,已跳过并继续下一个", icon=":material/error:")
-                        continue
-
-                    try:
-                        with open(srtZhName, 'w', encoding='utf-8') as srt_file:
-                            srt_file.write(srt_content)
-                    except Exception:
-                        # 写入失败(磁盘/NAS 抖动):删除残缺字幕,允许下次重跑,不中断整批
-                        if os.path.exists(srtZhName):
-                            os.remove(srtZhName)
-                        print(f"\033[1;31m❌ 翻译字幕写入失败,跳过该视频: {os.path.basename(filePath)}\033[0m")
-                        traceback.print_exc()
-                        continue
-                    st.session_state.output_file = output_file
-                    # 删除mp3
-                    if os.path.exists(output_file+"/output.mp3"):
-                        os.remove(output_file+"/output.mp3")
-                    print("\033[1;34m🎉 任务成功结束！\033[0m")
-                    print("\n" + "=" * 50 + "\n")
+                if _start_directory_batch():
+                    st.toast('批量任务已在后台线程启动，可切换菜单或关闭标签页，任务不会中断！', icon=":material/rocket_launch:")
+                else:
+                    st.toast('已有批量任务正在运行，请勿重复启动', icon=":material/error:")
             elif "uploaded_file_video" in st.session_state:
                 uploaded_file_video = st.session_state.uploaded_file_video
                 print("\n" + "=" * 50)
@@ -771,6 +898,8 @@ with tab1:
                 print("\n" + "=" * 50 + "\n")
             else:
                 st.toast("请先在工具栏中上传音频文件！", icon=":material/release_alert:")
+
+    _directory_batch_panel()
 
     st.write("")
     with st.expander("**Video Preview / 视频预览**", expanded=True, icon=":material/movie:"):
