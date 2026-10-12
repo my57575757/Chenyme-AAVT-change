@@ -12,3 +12,9 @@ torch
 torchvision
 torchaudio
 moviepy
+# Qwen3ASR 本地后端(可选,仅选择该后端时需要)
+# 注意:PyPI 默认的 torch 为 CPU 版,Qwen3ASR 用 GPU 需另装 CUDA 版,例如 5070Ti(Blackwell):
+# pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+qwen-asr
+modelscope
+accelerate

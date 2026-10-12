@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import streamlit_antd_components as sac
 from styles.global_style import style
 from tqdm import tqdm
-from utils.public import (FileToMp3, OpenaiWhisperResult, runWhisperSeperateProc, translate, local_translate,
+from utils.public import (FileToMp3, OpenaiWhisperResult, runWhisperSeperateProc, runQwenSeperateProc, translate, local_translate,
                           encode_image,
                           generate_srt_from_result, generate_srt_from_result_2, srt_mv, parse_srt_file, convert_to_srt,
                           show_video, add_font_settings, srt_to_ass, srt_to_vtt, srt_to_sbv, extract_frames, write_llms,
@@ -322,6 +322,8 @@ def _directory_batch_worker(state: DirectoryBatchState):
                                                     faster_local_prompt, faster_local_temp, faster_local_vad,
                                                     language_index, faster_local_beam_size, faster_local_min_vad,
                                                     video_name_original)
+                if whisper_mode == "Qwen3ASR - LocalModel":
+                    result = runQwenSeperateProc(output_file, language_index, video_name_original)
                 if 'error' in result:
                     # 删除mp3
                     if os.path.exists(output_file + "/output.mp3"):
@@ -558,6 +560,9 @@ with tab4:
                 faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names, model_names.index(faster_whisper_model_local_index), label_visibility="collapsed")
             except:
                 faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names)
+        if whisper_mode == "Qwen3ASR - LocalModel":
+            st.write("###### 识别模型")
+            st.caption("Qwen3-ASR-1.7B + ForcedAligner,路径与参数在全局设置中配置")
         st.write("")
         if whisper_mode != "OpenAIWhisper - API":
             st.write("###### 视频语言")
@@ -843,6 +848,8 @@ with tab1:
                     result = runWhisperSeperateProc(output_file, faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size, faster_min_vad, st.session_state.video_name_original)
                 if whisper_mode == "FasterWhisper - LocalModel":
                     result = runWhisperSeperateProc(output_file, faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad, st.session_state.video_name_original)
+                    if whisper_mode == "Qwen3ASR - LocalModel":
+                        result = runQwenSeperateProc(output_file, language_index, st.session_state.video_name_original)
                 if 'error' in result:
                     print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
                     st.error(f"处理失败，错误信息：{result['error']}")
@@ -1105,6 +1112,8 @@ with tab2:
                         result = runWhisperSeperateProc(output_file, faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index,  faster_beam_size, faster_min_vad)
                     if whisper_mode == "FasterWhisper - LocalModel":
                         result = runWhisperSeperateProc(output_file, faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad)
+                        if whisper_mode == "Qwen3ASR - LocalModel":
+                            result = runQwenSeperateProc(output_file, language_index, None)
                     if 'error' in result:
                         print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
                         container.error(f"**识别时发生异常**\n\n {result['error']}", icon=":material/running_with_errors:")
@@ -1300,6 +1309,8 @@ with tab3:
                     result = runWhisperSeperateProc(photos_path, faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size, faster_min_vad)
                 if whisper_mode == "FasterWhisper - LocalModel":
                     result = runWhisperSeperateProc(photos_path, faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad)
+                    if whisper_mode == "Qwen3ASR - LocalModel":
+                        result = runQwenSeperateProc(photos_path, language_index, None)
                 if 'error' in result:
                     print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
                     st.error(f"处理失败，错误信息：{result['error']}")

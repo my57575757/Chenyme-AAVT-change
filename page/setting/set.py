@@ -109,6 +109,15 @@ faster_local_drop_no_speech_prob = whispers["Faster_Local"].get("drop_no_speech_
 faster_local_dedupe_repeat = whispers["Faster_Local"].get("dedupe_repeat", True)
 faster_local_hotwords = whispers["Faster_Local"].get("hotwords", "")
 faster_local_hallucination_phrases = "\n".join(whispers["Faster_Local"].get("hallucination_phrases", []))
+
+qwen_asr_path = whispers.get("Qwen3ASR", {}).get("asr_path", "model/faster-whisper/Qwen3-ASR-1.7B")
+qwen_aligner_path = whispers.get("Qwen3ASR", {}).get("aligner_path", "model/faster-whisper/Qwen3-ForcedAligner-0.6B")
+qwen_gpu = whispers.get("Qwen3ASR", {}).get("gpu", True)
+qwen_context = whispers.get("Qwen3ASR", {}).get("context", "")
+qwen_max_new_tokens = whispers.get("Qwen3ASR", {}).get("max_new_tokens", 2048)
+qwen_line_max_chars = whispers.get("Qwen3ASR", {}).get("line_max_chars", 24)
+qwen_line_gap_seconds = whispers.get("Qwen3ASR", {}).get("line_gap_seconds", 1.0)
+qwen_line_max_seconds = whispers.get("Qwen3ASR", {}).get("line_max_seconds", 7.0)
 video_local_path = whispers["Video_Local"]["path"]  # 视频路径
 
 log_setting = project["ffmpeg"]["log"]
@@ -250,7 +259,7 @@ with tab1:
 
 with tab2:
     WhisperSave = st.container()
-    mode = ["OpenAIWhisper - API", "OpenAIWhisper - Local", "FasterWhisper - AutoDownload", "FasterWhisper - LocalModel", "WhisperX"]
+    mode = ["OpenAIWhisper - API", "OpenAIWhisper - Local", "FasterWhisper - AutoDownload", "FasterWhisper - LocalModel", "Qwen3ASR - LocalModel", "WhisperX"]
     whisper_mode = st.selectbox("**Whisper 后端**", mode, index=mode.index(whisper_mode))
     st.write("")
 
@@ -445,6 +454,51 @@ with tab2:
                             whispers["Faster_Local"]["hotwords"] = faster_local_hotwords
                             whispers["Faster_Local"]["hallucination_phrases"] = [line.strip() for line in faster_local_hallucination_phrases.splitlines() if line.strip()]
                             whispers["Video_Local"]["path"] = video_local_path
+                            toml.dump(whispers, f)
+                        st.session_state.save = True
+                        st.rerun()
+                with col1:
+                    st.write("")
+                    st.write("")
+                    st.subheader("识别后端设置")
+                    st.caption("Identify Backend Settings")
+                    st.write("")
+
+        if whisper_mode == "Qwen3ASR - LocalModel":
+            st.write("##### Qwen3ASR - 本地加载模型")
+            st.info("**使用提示：** \n\n 阿里 Qwen3-ASR-1.7B + Qwen3-ForcedAligner-0.6B，内置非语音拒绝，喘息/BGM/无对白段幻觉显著少于 Whisper。需 CUDA 版 torch 与本地模型目录，模型可从 ModelScope 下载。", icon=":material/lightbulb:")
+            st.write("")
+            col1, col2 = st.columns(2)
+            with col1:
+                qwen_gpu = st.checkbox("GPU 加速", value=qwen_gpu)
+                qwen_max_new_tokens = st.number_input("单块最大生成 token", min_value=256, max_value=8192, step=128, value=int(qwen_max_new_tokens))
+                qwen_line_max_chars = st.number_input("字幕每行最大字数", min_value=8, max_value=60, step=1, value=int(qwen_line_max_chars))
+            with col2:
+                qwen_line_gap_seconds = st.number_input("断句空隙 (s)", min_value=0.2, max_value=5.0, step=0.1, value=float(qwen_line_gap_seconds))
+                qwen_line_max_seconds = st.number_input("单行最大时长 (s)", min_value=2.0, max_value=20.0, step=0.5, value=float(qwen_line_max_seconds))
+            qwen_context = st.text_area("上下文 / 热词（自然句，演员名、片名、系列设定写在末尾）", value=qwen_context)
+            qwen_asr_path = st.text_input("ASR 模型路径", value=qwen_asr_path)
+            qwen_aligner_path = st.text_input("强制对齐模型路径", value=qwen_aligner_path)
+            st.write("")
+
+            with WhisperSave:
+                col1, col2 = st.columns([0.75, 0.3])
+                with col2:
+                    st.write("")
+                    st.write("")
+                    if st.button("**保存 Qwen3ASR 配置**", use_container_width=True, type="primary"):
+                        with open(whisper_path, 'w', encoding="utf-8") as f:
+                            whispers["Mode"]["WhisperMode"] = whisper_mode
+                            whispers["Qwen3ASR"] = {
+                                "asr_path": qwen_asr_path,
+                                "aligner_path": qwen_aligner_path,
+                                "gpu": qwen_gpu,
+                                "context": qwen_context,
+                                "max_new_tokens": qwen_max_new_tokens,
+                                "line_max_chars": qwen_line_max_chars,
+                                "line_gap_seconds": qwen_line_gap_seconds,
+                                "line_max_seconds": qwen_line_max_seconds,
+                            }
                             toml.dump(whispers, f)
                         st.session_state.save = True
                         st.rerun()

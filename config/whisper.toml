@@ -45,5 +45,15 @@ hallucination_phrases = [ "ありがとうございました", "ご視聴あり�
 [other]
 first = true
 
+[Qwen3ASR]
+asr_path = "model/faster-whisper/Qwen3-ASR-1.7B"
+aligner_path = "model/faster-whisper/Qwen3-ForcedAligner-0.6B"
+gpu = true
+context = ""
+max_new_tokens = 2048
+line_max_chars = 24
+line_gap_seconds = 1.0
+line_max_seconds = 7.0
+
 [Video_Local]
 path = "\\\\nas\\迅雷下载"

@@ -6,7 +6,7 @@ import datetime
 import streamlit as st
 import streamlit_antd_components as sac
 from styles.global_style import style
-from utils.public import (FileToMp3, OpenaiWhisperResult, runWhisperSeperateProc, translate, local_translate,
+from utils.public import (FileToMp3, OpenaiWhisperResult, runWhisperSeperateProc, runQwenSeperateProc, translate, local_translate,
                           generate_srt_from_result, generate_srt_from_result_2, srt_mv, parse_srt_file, convert_to_srt,
                           show_video, add_font_settings, srt_to_ass, srt_to_vtt, srt_to_sbv, TranslationRefused)
 
@@ -225,6 +225,9 @@ with tab2:
                 faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names, model_names.index(faster_whisper_model_local_index), label_visibility="collapsed")
             except:
                 faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names)
+        if whisper_mode == "Qwen3ASR - LocalModel":
+            st.write("###### 识别模型")
+            st.caption("Qwen3-ASR-1.7B + ForcedAligner,路径与参数在全局设置中配置")
         st.write("")
         if whisper_mode != "OpenAIWhisper - API":
             st.write("###### 视频语言")
@@ -392,6 +395,8 @@ with tab1:
                     result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_gpu, faster_whisper_model_index, faster_prompt, faster_temp, faster_vad, language_index, faster_beam_size, faster_min_vad, st.session_state.audio_name)
                 if whisper_mode == "FasterWhisper - LocalModel":
                     result = runWhisperSeperateProc(f"{output_file}/{st.session_state.audio_name}", faster_local_gpu, faster_whisper_model_local_index, faster_local_prompt, faster_local_temp, faster_local_vad, language_index, faster_local_beam_size, faster_local_min_vad, st.session_state.audio_name)
+                if whisper_mode == "Qwen3ASR - LocalModel":
+                    result = runQwenSeperateProc(f"{output_file}/{st.session_state.audio_name}", language_index, st.session_state.audio_name)
                 if 'error' in result:
                     print(f"\033[1;31m❌ Whisper识别异常: {result['error']}\033[0m")
                     st.error(f"处理失败，错误信息：{result['error']}")

@@ -7,6 +7,7 @@ from pathlib import Path
 from openai import OpenAI
 from openai import OpenAIError
 from concurrent.futures import ThreadPoolExecutor
+from collections import namedtuple
 from faster_whisper import WhisperModel
 import anthropic
 import pandas as pd
@@ -364,6 +365,209 @@ def runWhisperSeperateProc(*args):
         print(f"\033[1;31m❌ Whisper 独立进程异常: {type(e).__name__}: {e}\033[0m")
         traceback.print_exc()
         return {"error": f"Whisper 独立进程异常: {type(e).__name__}: {e}"}
+
+
+QWEN_LANG_MAP = {
+    "zh": "Chinese", "en": "English", "ja": "Japanese", "th": "Thai",
+    "de": "German", "fr": "French", "ru": "Russian", "ko": "Korean",
+    "vi": "Vietnamese", "it": "Italian", "ar": "Arabic", "es": "Spanish",
+    "pt": "Portuguese", "hi": "Hindi",
+}
+QWEN_LANG_REVERSE = {v: k for k, v in QWEN_LANG_MAP.items()}
+
+QWEN_SETTINGS_DEFAULTS = {
+    "asr_path": "model/faster-whisper/Qwen3-ASR-1.7B",
+    "aligner_path": "model/faster-whisper/Qwen3-ForcedAligner-0.6B",
+    "gpu": True,
+    "context": "",
+    "max_new_tokens": 2048,
+    "line_max_chars": 24,
+    "line_gap_seconds": 1.0,
+    "line_max_seconds": 7.0,
+}
+
+
+def _load_qwen_settings() -> dict:
+    settings = dict(QWEN_SETTINGS_DEFAULTS)
+    config_path = Path(__file__).resolve().parent.parent / "config" / "whisper.toml"
+    try:
+        with open(config_path, 'r', encoding="utf-8") as f:
+            raw = toml.load(f).get("Qwen3ASR", {})
+        for key in settings:
+            if key in raw:
+                settings[key] = raw[key]
+    except Exception as e:
+        print(f"\033[1;33m⚠️ Qwen3ASR 配置读取失败,使用默认值: {type(e).__name__}: {e}\033[0m")
+    root = Path(__file__).resolve().parent.parent
+    for path_key in ("asr_path", "aligner_path"):
+        p = Path(str(settings[path_key]))
+        if not p.is_absolute():
+            settings[path_key] = str((root / p).resolve())
+    return settings
+
+
+def _join_qwen_item_texts(items: list) -> str:
+    text = ""
+    for item in items:
+        t = item.text
+        if text and re.match(r"^[A-Za-z0-9]", t) and not re.search(r"[\s(\[\{\"'‘“\-–—]$", text):
+            text += " "
+        text += t
+    return re.sub(r"\s+([,.;:!?%])", r"\1", text).strip()
+
+
+def _qwen_items_to_segments(items: list, max_chars: int, gap_seconds: float, max_line_seconds: float) -> list:
+    AlignedItem = namedtuple("AlignedItem", ["text", "start_time", "end_time"])
+    # 把 Qwen3-ForcedAligner 的字符/词级 items 聚成字幕行:
+    # 句读标点断行优先,其次超长/时间空隙/单行最大时长兜底
+    sentence_end = "。．.！？!?…"
+    segments = []
+    current = []
+
+    def flush():
+        if not current:
+            return
+        line_text = _join_qwen_item_texts(current)
+        if line_text:
+            segments.append({
+                "start": float(current[0].start_time),
+                "end": float(current[-1].end_time),
+                "text": line_text,
+            })
+
+    for index, item in enumerate(items):
+        item_text = item.text.strip()
+        if not item_text:
+            continue
+        # 强制指定语言时模型对非语音段可能输出幻觉短句,对齐器无法对齐会给零时长 span,直接丢弃
+        if float(item.end_time) <= float(item.start_time):
+            continue
+        # 空隙/超长在加入新 item 前断行,保证已产出的行不越界
+        if current:
+            gap = float(item.start_time) - float(current[-1].end_time)
+            joined_duration = float(item.end_time) - float(current[0].start_time)
+            if gap > gap_seconds or joined_duration > max_line_seconds:
+                flush()
+                current = []
+        current.append(AlignedItem(item_text, float(item.start_time), float(item.end_time)))
+        line_len = len(_join_qwen_item_texts(current))
+        if item_text[-1:] in sentence_end or line_len >= max_chars:
+            flush()
+            current = []
+    flush()
+    return segments
+
+
+def _qwen_result_dict(lang_code: str, segments: list):
+    return {
+        'lang': lang_code,
+        'text': ' '.join(segment['text'] for segment in segments),
+        'segments': [{
+            'id': index,
+            'seek': 0,
+            'start': segment['start'],
+            'end': segment['end'],
+            'text': segment['text'],
+            'tokens': [],
+            'temperature': 0.0,
+            'avg_logprob': 0.0,
+            'compression_ratio': 0.0,
+            'no_speech_prob': 0.0,
+        } for index, segment in enumerate(segments)]
+    }
+
+
+def Qwen3ASRResult(file_path: str, lang: str, fileName: str, returnList):
+    print("\n\033[1;35m*** Qwen3-ASR 本地模型模式 ***\033[0m\n")
+    settings = _load_qwen_settings()
+    file_path = Path(file_path)
+    try:
+        if file_path.is_file():
+            audio_path = file_path
+        else:
+            audio_path = file_path / "output.mp3"
+        if not audio_path.is_file():
+            raise FileNotFoundError(audio_path)
+    except FileNotFoundError as e:
+        returnList[0] = {"error": f"文件错误：{str(e)}"}
+        return {"error": f"文件错误：{str(e)}"}
+
+    try:
+        import torch
+        from qwen_asr import Qwen3ASRModel
+    except ImportError as e:
+        msg = f"Qwen3-ASR 依赖未安装: {type(e).__name__}: {e}"
+        print(f"\033[1;31m❌ {msg}\033[0m")
+        returnList[0] = {"error": msg}
+        return {"error": msg}
+
+    qwen_lang = None
+    if lang and lang != "自动识别":
+        qwen_lang = QWEN_LANG_MAP.get(lang)
+        if qwen_lang is None:
+            print(f"\033[1;33m⚠️ 语言 {lang} 不在 Qwen3-ASR 支持表,回退自动识别\033[0m")
+
+    try:
+        use_gpu = bool(settings["gpu"]) and torch.cuda.is_available()
+        device = "cuda:0" if use_gpu else "cpu"
+        dtype = torch.bfloat16 if use_gpu else torch.float32
+        print(f"\033[1;34m🖥️ 运行模型: Qwen3-ASR-1.7B + ForcedAligner\033[0m")
+        print(f"\033[1;34m⚙️️ 运行方式: {device}\033[0m")
+        print(f"\033[1;34m🌐 识别语言: {qwen_lang or '自动识别'}\033[0m")
+        model = Qwen3ASRModel.from_pretrained(
+            settings["asr_path"],
+            forced_aligner=settings["aligner_path"],
+            forced_aligner_kwargs={"dtype": dtype, "device_map": device},
+            dtype=dtype,
+            device_map=device,
+            max_new_tokens=int(settings["max_new_tokens"]),
+        )
+        results = model.transcribe(
+            audio=str(audio_path),
+            language=qwen_lang,
+            context=str(settings["context"]),
+            return_time_stamps=True,
+        )
+        transcription = results[0]
+        items = list(transcription.time_stamps.items) if transcription.time_stamps else []
+        segments = _qwen_items_to_segments(
+            items,
+            max_chars=int(settings["line_max_chars"]),
+            gap_seconds=float(settings["line_gap_seconds"]),
+            max_line_seconds=float(settings["line_max_seconds"]),
+        )
+        detected_code = lang if lang and lang != "自动识别" else QWEN_LANG_REVERSE.get(transcription.language, "")
+        result = _qwen_result_dict(detected_code, segments)
+        if not segments:
+            print("\033[1;33m⚠️ 未识别到任何语音片段(可能为纯静音/非语音素材)\033[0m")
+        print(f"\033[1;34m📝 Qwen3-ASR 识别结果:\033[0m\n{result['text']}")
+        returnList[0] = result
+        return result
+
+    except Exception as e:
+        if fileName is not None:
+            erroFile = f"{os.path.splitext(fileName)[0]}_erro.txt"
+            with open(erroFile, 'w', encoding='utf-8') as error_file:
+                error_file.write(str(e))
+        traceback.print_exc()
+        print(f"转录过程发生错误：{str(e)}")
+        returnList[0] = {"error": f"转录过程发生错误：{str(e)}"}
+        return {"error": f"转录过程发生错误：{str(e)}"}
+
+
+def runQwenSeperateProc(*args):
+    try:
+        with Manager() as manager:
+            returnList = manager.list([None])
+            p = Process(target=Qwen3ASRResult, args=args + (returnList,))
+            p.start()
+            p.join()
+            p.close()
+            return returnList[0]
+    except Exception as e:
+        print(f"\033[1;31m❌ Qwen3ASR 独立进程异常: {type(e).__name__}: {e}\033[0m")
+        traceback.print_exc()
+        return {"error": f"Qwen3ASR 独立进程异常: {type(e).__name__}: {e}"}
 
 
 
