@@ -9,4 +9,4 @@ open = true
 password = "chenymeaavt"
 
 [other]
-first = false
+first = true

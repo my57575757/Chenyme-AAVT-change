@@ -1,7 +1,7 @@
 [Home]
 key = "sk-mTx1Qx04xagOqpHJB0DeF581E8C84370818c7aD5D15cA309"
 url = "https://api.chenyme.top/v1"
-model = [ 0, 1,]
+model = [ 18, 20,]
 
 [Local]
 key = ""
@@ -14,8 +14,8 @@ url = ""
 model = ""
 
 [Global]
-key = ""
-url = ""
+key = "sk-BffnTyBMPa9y4X3vl9UHOeoviZT1RDExiYSb1oap171OY0cc"
+url = "https://api.openai-proxy.org/v1"
 all = false
 
 [ChatGPT]
@@ -31,11 +31,11 @@ key = ""
 url = ""
 
 [DeepSeek]
-key = ""
+key = "sk-2b11aaccedad4864af41d02f3ffdbb55"
 url = "https://api.deepseek.com/v1"
 
 [Kimi]
-key = ""
+key = "sk-3dmUVSlwejWqSeoXO58s0xsymeM1jD8uWx1xGZZJfHSOpuhP"
 url = "https://api.moonshot.cn/v1"
 
 [ChatGLM]

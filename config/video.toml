@@ -5,23 +5,23 @@ faster_whisper_model_list = [ "tiny", "tiny.en", "base", "base.en", "small", "sm
 language_index = "自动识别"
 openai_whisper_model_index = "whisper-1"
 faster_whisper_model_index = "base"
-faster_whisper_model_local_index = "put models here（删除模型时请切换到该模型文件）"
+faster_whisper_model_local_index = "large-v3"
 
 [translate]
-translate_index = [ 2, 4,]
+translate_index = [ 17, 18,]
 language_list = [ "简体中文", "繁体中文", "英语", "日语", "泰语", "德语", "法语", "俄语", "韩国语", "越南语", "意大利语", "阿拉伯语", "西班牙语", "孟加拉语", "葡萄牙语", "印地语（北印度语）",]
-language_index1 = "英语"
+language_index1 = "日语"
 language_index2 = "简体中文"
-prompt = "Prompt for GPT"
-wait_time = 0.20000000000000004
+prompt = "Prompt for Others"
+wait_time = 1.0
 
 [subtitle]
 subtitle_model = "硬字幕"
-font = "System"
+font = "Arial"
 soft_font_size = 60
 hard_font_size = 18
-srt = "关闭"
+srt = "目标语言为首"
 font_color = "#ffffff"
 
 [other]
-first = false
+first = true
