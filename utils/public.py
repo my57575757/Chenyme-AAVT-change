@@ -267,6 +267,27 @@ def runWhisperSeperateProc(*args):
 BATCH_MAX_LINES = 150
 BATCH_MAX_CHARS = 6000
 _NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\s*[|｜]\s*(.*)$")
+_NUMBERED_ANY_RE = re.compile(r"^\s*\d+\s*[|｜]", re.M)
+_REFUSAL_MARKERS = (
+    "不能协助", "无法协助", "不能提供", "无法提供", "不能翻译", "无法翻译",
+    "抱歉", "不便", "违反", "内容政策", "不适宜", "敏感内容",
+    "i can't", "i can not", "i cannot", "i'm unable", "i am unable",
+    "cannot assist", "can't assist", "unable to assist", "content policy",
+)
+
+
+class TranslationRefused(Exception):
+    pass
+
+
+def _looks_like_refusal(content):
+    text = str(content or "").strip()
+    if not text:
+        return True
+    if _NUMBERED_ANY_RE.search(text):
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _REFUSAL_MARKERS)
 
 
 def _chunk_translation_items(texts, max_lines=BATCH_MAX_LINES, max_chars=BATCH_MAX_CHARS):
@@ -326,19 +347,47 @@ def _build_batch_user_prompt(user_prompt, block):
     return template.rstrip() + "\n\n" + block
 
 
+def _translate_one(system_prompt, user_prompt, index, original, send):
+    block = _build_numbered_block([(index, original)])
+    content = send(system_prompt, _build_batch_user_prompt(user_prompt, block))
+    if _looks_like_refusal(content):
+        raise TranslationRefused(str(content)[:120])
+    parsed = _parse_numbered_translations(content, [index + 1])
+    return parsed[index + 1]
+
+
+def _translate_chunk(system_prompt, user_prompt, items, send):
+    block = _build_numbered_block(items)
+    content = send(system_prompt, _build_batch_user_prompt(user_prompt, block))
+    if _looks_like_refusal(content):
+        raise TranslationRefused(str(content)[:120])
+    parsed = _parse_numbered_translations(content, [index + 1 for index, _ in items])
+    return {index: parsed[index + 1] for index, _ in items}
+
+
 def _batch_translate(system_prompt, user_prompt, texts, send, wait_time=0,
                      max_lines=BATCH_MAX_LINES, max_chars=BATCH_MAX_CHARS):
     translations = [None] * len(texts)
     chunks = list(_chunk_translation_items(texts, max_lines, max_chars))
     total = len(chunks)
     for chunk_index, items in enumerate(chunks):
-        block = _build_numbered_block(items)
-        user_content = _build_batch_user_prompt(user_prompt, block)
-        content = send(system_prompt, user_content)
-        parsed = _parse_numbered_translations(content, [index + 1 for index, _ in items])
+        refused = 0
+        try:
+            mapping = _translate_chunk(system_prompt, user_prompt, items, send)
+        except (TranslationRefused, ValueError):
+            # 整批被安全策略拒答或输出无法对齐时,逐条重试以隔离问题条目,被拒条目保留原文
+            mapping = {}
+            for index, original in items:
+                try:
+                    mapping[index] = _translate_one(system_prompt, user_prompt, index, original, send)
+                except (TranslationRefused, ValueError):
+                    mapping[index] = original
+                    refused += 1
+            print(f"\033[1;33m⚠️ 本批 {len(items)} 条整批失败,已逐条重试,{refused} 条保留原文\033[0m")
         for index, _ in items:
-            translations[index] = parsed[index + 1]
-        print(f"\033[1;34m📦 批量翻译进度: {chunk_index + 1}/{total} 块(本块 {len(items)} 条)\033[0m")
+            translations[index] = mapping[index]
+        print(f"\033[1;34m📦 批量翻译进度: {chunk_index + 1}/{total} 块(本块 {len(items)} 条"
+              + (f",{refused} 条未译" if refused else "") + ")\033[0m")
         if wait_time and chunk_index < total - 1:
             time.sleep(wait_time)
     return translations

@@ -129,5 +129,31 @@ class FindVideosTests(unittest.TestCase):
             self.assertFalse(any("云盘缓存文件" in f for f in found))
 
 
+class RefusalTests(unittest.TestCase):
+    def test_detects_refusal(self):
+        self.assertTrue(public._looks_like_refusal("抱歉，我不能协助翻译涉及露骨性暴力的内容。"))
+        self.assertTrue(public._looks_like_refusal(""))
+        self.assertFalse(public._looks_like_refusal("1|你好\n2|世界"))
+        self.assertFalse(public._looks_like_refusal("你好"))
+
+    def test_batch_refusal_falls_back_per_line(self):
+        texts = ["你好", "露骨内容A", "再见"]
+
+        def fake_send(system_prompt, user_content):
+            # 整批请求:拒答
+            if user_content.count("|") >= 2:
+                return "抱歉，我不能协助翻译此类内容。"
+            # 逐条:含露骨关键字的拒答,其余正常
+            num = int(user_content.split("|", 1)[0].strip().splitlines()[-1])
+            if "露骨" in user_content:
+                return "抱歉，我不能协助。"
+            return f"{num}|译{num}"
+
+        out = public._batch_translate("SYS", "{subtitles}", texts, fake_send, wait_time=0)
+        self.assertEqual(out[0], "译1")
+        self.assertEqual(out[1], "露骨内容A")  # 被拒条目保留原文
+        self.assertEqual(out[2], "译3")
+
+
 if __name__ == "__main__":
     unittest.main()
