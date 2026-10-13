@@ -220,11 +220,16 @@ with tab2:
         if whisper_mode == "FasterWhisper - LocalModel":
             st.write("###### 识别模型")
             st.caption("使用已部署到本地的 FasterWhisper 模型 | [支持的模型](https://huggingface.co/Systran) | [使用教程](https://blog.chenyme.top/blog/aavt-install#bfd48658b23b)")
-            model_names = os.listdir(faster_local_path)
-            try:
-                faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names, model_names.index(faster_whisper_model_local_index), label_visibility="collapsed")
-            except:
-                faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names)
+            # CTranslate2 模型以 model.bin 为标志;Qwen3-ASR 等 HF 格式目录混入会在加载时报 model.bin 缺失
+            model_names = [d for d in os.listdir(faster_local_path)
+                           if os.path.isfile(os.path.join(faster_local_path, d, "model.bin"))]
+            if model_names:
+                try:
+                    faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names, model_names.index(faster_whisper_model_local_index), label_visibility="collapsed")
+                except:
+                    faster_whisper_model_local_index = st.selectbox("Whisper 本地模型", model_names)
+            else:
+                st.warning("本地模型目录中没有可用的 FasterWhisper 模型（CTranslate2 格式，目录内需含 model.bin）")
         if whisper_mode == "Qwen3ASR - LocalModel":
             st.write("###### 识别模型")
             st.caption("Qwen3-ASR-1.7B + ForcedAligner,路径与参数在全局设置中配置")

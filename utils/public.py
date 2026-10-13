@@ -322,8 +322,10 @@ def FasterWhisperResult(file_path: str, device: bool, model_name: str, prompt: s
             }
             if settings["hallucination_silence"] > 0:
                 transcribe_args["hallucination_silence_threshold"] = settings["hallucination_silence"]
-            if str(settings["hotwords"]).strip():
-                transcribe_args["hotwords"] = str(settings["hotwords"]).strip()
+            # CTranslate2 hotwords 只按空白分词,UI 允许逗号/顿号分隔,统一归一化
+            hotwords = " ".join(filter(None, re.split(r"[\s,，、]+", str(settings["hotwords"]))))
+            if hotwords:
+                transcribe_args["hotwords"] = hotwords
             if vad:
                 transcribe_args.update({
                     "vad_filter": vad,

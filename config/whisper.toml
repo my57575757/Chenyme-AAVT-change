@@ -1,5 +1,5 @@
 [Mode]
-WhisperMode = "FasterWhisper - LocalModel"
+WhisperMode = "Qwen3ASR - LocalModel"
 
 [OpenAI]
 Temp = 0.8
@@ -22,7 +22,7 @@ drop_no_speech_prob = 0.85
 dedupe_repeat = true
 zombie_min_seconds = 60.0
 zombie_max_chars_per_second = 0.2
-hotwords = ""
+hotwords = "気持ちいい だめ 優しく"
 hallucination_phrases = [ "ご視聴ありがとうございました", "ご視聴ありがとうございます", "最後までご視聴ありがとうございました", "ご清聴ありがとうございました", "チャンネル登録お願いします", "高評価とチャンネル登録をお願いします", "また次回お会いしましょう", "感谢观看", "谢谢观看", "请订阅频道", "感谢您的观看", "Thank you for watching.", "Thanks for watching.", "Please subscribe.", "Please like and subscribe.", "Subtitles by Amara.org", "Transcription by CastingWords", "DimaTorzok",]
 
 [Faster_Local]
@@ -43,7 +43,7 @@ drop_no_speech_prob = 0.85
 dedupe_repeat = true
 zombie_min_seconds = 60.0
 zombie_max_chars_per_second = 0.2
-hotwords = ""
+hotwords = "気持ちいい だめ 優しく"
 hallucination_phrases = [ "ご視聴ありがとうございました", "ご視聴ありがとうございます", "最後までご視聴ありがとうございました", "ご清聴ありがとうございました", "チャンネル登録お願いします", "高評価とチャンネル登録をお願いします", "また次回お会いしましょう", "感谢观看", "谢谢观看", "请订阅频道", "感谢您的观看", "Thank you for watching.", "Thanks for watching.", "Please subscribe.", "Please like and subscribe.", "Subtitles by Amara.org", "Transcription by CastingWords", "DimaTorzok",]
 
 [other]
@@ -53,17 +53,15 @@ first = true
 asr_path = "model/faster-whisper/Qwen3-ASR-1.7B"
 aligner_path = "model/faster-whisper/Qwen3-ForcedAligner-0.6B"
 gpu = true
-context = ""
+context = "この音声は日本人の男女による会話です。くだけた話し言葉を自然な句読点で書き起こし、音声にない言葉は追加しないでください。よく出る言葉:お兄ちゃん お姉ちゃん 先輩 先生 奥さん 旦那さん 気持ちいい 優しく だめ やめて いく すごい お願い 待って 恥ずかしい"
 max_new_tokens = 2048
 line_max_chars = 24
 line_gap_seconds = 1.0
 line_max_seconds = 7.0
-# VAD 预筛(复用 faster-whisper 自带 Silero):跳过纯非语音块,AV 素材可跳 80% 时长
 vad_enabled = true
 vad_threshold = 0.5
 vad_block_seconds = 30
 vad_min_speech_ratio = 0.02
-# 稀疏幻觉过滤:对齐器把幻觉字符摊到超长跨度上(实测正常 0.1~0.3s/字,幻觉 2~97s/字)
 sparse_item_min_seconds = 1.5
 sparse_item_max_seconds_per_char = 1.5
 sparse_line_min_seconds = 3.0
